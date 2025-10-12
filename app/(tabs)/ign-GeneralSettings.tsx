@@ -150,7 +150,7 @@ const GeneralSettings = () => {
       } catch (e) { 
         // No-op if context unavailable
       }
-      router.push('/splash');
+  router.push('/(tabs)');
 
       // Apply saved changes after navigation so the app updates on the splash route
       // Small additional delay gives the router time to mount the splash screen

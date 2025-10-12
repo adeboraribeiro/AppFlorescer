@@ -165,6 +165,9 @@ export default {
   applimits: 'App Limits',
   moodtracker: 'Mood Tracker'
   },
+  chat: {
+    type_message: 'Chat with Bromélia...'
+  },
   tabs: {
     home: 'Home',
     more: 'More'

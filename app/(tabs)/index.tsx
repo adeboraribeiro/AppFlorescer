@@ -55,7 +55,7 @@ export default function splash() {
         // Wait only for the animation duration
         await new Promise(resolve => setTimeout(resolve, animationDurationMs));
 
-        // Fade out animation (300ms) and wait for it to complete
+        // Fade out animation (300ms)
         Animated.parallel([
           Animated.timing(fadeAnim, {
             toValue: 0,
@@ -69,42 +69,34 @@ export default function splash() {
           })
         ]).start();
 
-        await new Promise(resolve => setTimeout(resolve, 300));
-        
-        // Only navigate if component is still mounted. Instead of hiding the
-        // splash immediately, set a target and wait for the router's active
-        // segments to reflect the new route so the layout can hide header/tab
-        // and avoid a visual flash.
+        // Immediately trigger navigation and hide the splash to avoid a long
+        // white-screen pause after the animation completes.
         if (mounted) {
           try {
-            // Policy: onboarding should only mount when the user is NOT authenticated.
-            // If an authenticated session exists, route straight to home regardless
-            // of the server's onboarding flag to avoid showing onboarding UI.
             if (user) {
               router.replace('/(tabs)/home' as any);
-              setTargetRoute('home');
             } else {
               router.replace('/ign-onboarding' as any);
-              setTargetRoute('ign');
             }
           } finally {
-            // don't setDone here; wait for segments watcher below
+            // Hide splash now; the layout may briefly re-render but this
+            // prevents an extended white screen.
+            setDone(true);
+            return;
           }
         }
       } catch (error) {
         console.error('Error preparing app:', error);
         if (mounted) {
           try {
-            // Same policy for error/fallback path: only show onboarding when unauthenticated
             if (user) {
               router.replace('/(tabs)/home' as any);
-              setTargetRoute('home');
             } else {
               router.replace('/ign-onboarding' as any);
-              setTargetRoute('ign');
             }
           } finally {
-            // wait for segments to update before unmounting
+            setDone(true);
+            return;
           }
         }
       }
@@ -120,32 +112,36 @@ export default function splash() {
   // Fade in and slide animations
   useEffect(() => {
     // Initial animations for logo
-    Animated.parallel([
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: 750,
-        useNativeDriver: true,
-      }),
-      Animated.timing(slideFlowerAnim, {
-        toValue: 0,
-        duration: 750,
-        useNativeDriver: true,
-      }),
-      Animated.timing(slideTextAnim, {
-        toValue: 0,
-        duration: 750,
-        useNativeDriver: true,
-      })
+    // Initial animations for logo — add 500ms extra delay before they start
+    Animated.sequence([
+      Animated.delay(150),
+      Animated.parallel([
+        Animated.timing(fadeAnim, {
+          toValue: 1,
+          duration: 750,
+          useNativeDriver: true,
+        }),
+        Animated.timing(slideFlowerAnim, {
+          toValue: 0,
+          duration: 750,
+          useNativeDriver: true,
+        }),
+        Animated.timing(slideTextAnim, {
+          toValue: 0,
+          duration: 750,
+          useNativeDriver: true,
+        })
+      ])
     ]).start();
 
-    // Delayed footer animation
+    // Delayed footer animation (kept relative timing — add same 500ms)
     setTimeout(() => {
       Animated.timing(footerFadeAnim, {
         toValue: 1,
         duration: 800,
         useNativeDriver: true,
       }).start();
-    }, 1101);
+    }, 1601);
   }, []);
 
   // Single spin animation for petals

@@ -370,14 +370,14 @@ export default function ChatScreen() {
           style={{ flex: 1 }}
         />
 
-        <View style={{ borderTopWidth: 1, borderTopColor: isDark ? '#0E2E2C' : '#E6E6E6', backgroundColor: isDark ? '#0A1E1C' : '#ffffffff', paddingTop: 4 }}>
+  <View style={{ position: 'relative', backgroundColor: isDark ? '#0A1E1C' : '#ffffffff', paddingTop: 4 }}>
           {showWarmup && (
             <WarmupBanner
               duration={3000}
               onFinish={() => setShowWarmup(false)}
             />
           )}
-          <View style={[styles.inputWrapper, { paddingTop: 2 }]}> 
+          <View style={[styles.inputWrapper, { paddingTop: 3 }]}> 
             <TouchableOpacity
               style={styles.clearButtonInline}
               onPress={() => {
@@ -390,7 +390,7 @@ export default function ChatScreen() {
             </TouchableOpacity>
 
             <TextInput
-              style={styles.inputCentered}
+              style={[styles.inputCentered, { marginTop: 3 }]}
               value={inputText}
               onChangeText={setInputText}
               placeholder={t('chat.type_message', 'Chat with Bromélia...')}
@@ -450,7 +450,7 @@ const getThemedStyles = (isDark: boolean) =>
       // reduce top padding so list content starts higher
       paddingTop: 4,
       paddingHorizontal: 16,
-      paddingBottom: 105, // slightly larger to match keyboard offset
+      paddingBottom: 255, // increased so content isn't hidden when input is moved up
     },
     messageContainer: {
       maxWidth: '80%',
@@ -502,8 +502,17 @@ const getThemedStyles = (isDark: boolean) =>
       alignItems: 'center',
       justifyContent: 'center',
       paddingHorizontal: 12,
-      paddingTop: 4,
+      // styles.inputWrapper.paddingTop (1) + inline paddingTop (2) = 3px gap
+  paddingTop: 0,
       paddingBottom: 0,
+      // actually move the input up by 150px
+      position: 'absolute',
+      left: 0,
+      right: 0,
+      bottom: 90,
+      zIndex: 2,
+      borderTopWidth: 1,
+      borderTopColor: isDark ? '#0E2E2C' : '#E6E6E6',
     },
     inputCentered: {
       width: '78%',

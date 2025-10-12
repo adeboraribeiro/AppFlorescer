@@ -17,25 +17,19 @@ import {
   TouchableWithoutFeedback,
   View
 } from 'react-native';
+import Svg, { Circle } from 'react-native-svg';
 // Plan exporter is intentionally imported here — login screen needs to read
 // exported plans when arriving from onboarding.
 import Providers from '@/components/Providers';
+import { getLoginCache, saveLoginCache } from '../../components/loginCache';
 import { getSelectedFeatureIds, readSelectedPlans } from '../../components/planexport';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useUser } from '../../contexts/UserContext';
 import { supabase } from '../../lib/supabase';
-// The project's `screens/loginCache` was removed; provide safe fallbacks here
-// so the login screen continues to work without the optional cache module.
-const getLoginCache = (_mode: 'login' | 'signup') => {
-  // return null to indicate no cached values
-  return null as null | { localValues?: any; formData?: any };
-};
-
-const saveLoginCache = (_payload: any, _mode: 'login' | 'signup') => {
-  // noop: preserve callers but do not persist anything when the module is missing
-};
+// Use the centralized in-memory login cache so inputs persist across navigation
+// while the app is running (keeps values when the user opens onboarding and returns).
 
 // Ensure all Text components default to the requested color
 (Text as any).defaultProps = (Text as any).defaultProps || {};
@@ -96,6 +90,29 @@ export default function LoginScreen() {
   // Login refs
   const emailInputLogin = useRef<TextInput>(null);
   const passwordInputLogin = useRef<TextInput>(null);
+  // Helper to blur all known input refs so caret/focus is removed
+  const blurAllInputs = () => {
+    try {
+      const refs = [
+        nameInputSignup,
+        lastNameInputSignup,
+        birthdateInputSignup,
+        emailInputSignup,
+        usernameInputSignup,
+        passwordInputSignup,
+        confirmPasswordInputSignup,
+        emailInputLogin,
+        passwordInputLogin,
+      ];
+      refs.forEach((r) => {
+        try {
+          if (r && (r as any).current && typeof (r as any).current.blur === 'function') {
+            (r as any).current.blur();
+          }
+        } catch (e) {}
+      });
+    } catch (e) {}
+  };
   const [formData, setFormData] = useState({
   email_login: '',
   email_signup: '',
@@ -124,9 +141,14 @@ export default function LoginScreen() {
   // inputs are not shown in signup and vice-versa.
   useEffect(() => {
     try {
+      // If a programmatic page toggle is in progress and we've already
+      // collected a pending cache to apply after the scroll, do not restore
+      // now — it will be applied when the scroll finishes to avoid visual
+      // clearing during the animation.
+      if (pendingCacheRef.current) return;
       const cached = getLoginCache(isSignup ? 'signup' : 'login');
-      if (cached?.localValues) setLocalValues(prev => ({ ...prev, ...cached.localValues }));
-      if (cached?.formData) setFormData(prev => ({ ...prev, ...cached.formData }));
+  if (cached?.localValues) setLocalValues(prev => ({ ...cached.localValues, ...prev }));
+  if (cached?.formData) setFormData(prev => ({ ...cached.formData, ...prev }));
     } catch (e) {}
   }, [isSignup]);
 
@@ -138,11 +160,14 @@ export default function LoginScreen() {
   useEffect(() => {
     try {
       const from = (params as any)?.from;
-      if (from === 'onboarding') {
-        const cached = getLoginCache(isSignup ? 'signup' : 'login');
-        if (cached?.localValues) setLocalValues(prev => ({ ...prev, ...cached.localValues }));
-        if (cached?.formData) setFormData(prev => ({ ...prev, ...cached.formData }));
-      }
+        if (from === 'onboarding') {
+      // Same guard as above: if a programmatic page toggle is in-flight
+      // the pending cache will be applied later; skip immediate restore.
+      if (pendingCacheRef.current) return;
+      const cached = getLoginCache(isSignup ? 'signup' : 'login');
+      if (cached?.localValues) setLocalValues(prev => ({ ...cached.localValues, ...prev }));
+      if (cached?.formData) setFormData(prev => ({ ...cached.formData, ...prev }));
+        }
     } catch (e) {}
   }, [params?.from, isSignup]);
   // Mirror localValues in a ref so debounce callbacks always read the latest visible value
@@ -328,6 +353,10 @@ export default function LoginScreen() {
   const isProgrammaticScrollRef = useRef(false);
   // Desired page index when programmatic scroll is in-flight (0 = signup, 1 = login)
   const desiredPageRef = useRef<number | null>(null);
+  // Pending cached inputs to apply after programmatic page scroll finishes
+  const pendingCacheRef = useRef<{ localValues?: any; formData?: any } | null>(null);
+  // Flag to skip the next automatic cache restore (used after we applied pendingCache)
+  const skipRestoreRef = useRef(false);
   // Timeout ref used to keep the programmatic guard active briefly on initial mount
   // (prevents a quick flip when coming from onboarding which may cause routing races)
   const initGuardTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -397,6 +426,8 @@ export default function LoginScreen() {
         friction: 12,
         useNativeDriver: true,
       }).start();
+  // Ensure any lingering input caret is blurred when keyboard hides
+  try { blurAllInputs(); } catch (e) {}
     });
     return () => {
       keyboardDidShowSub.remove();
@@ -722,6 +753,10 @@ export default function LoginScreen() {
   });
   // Specific reason for birthdate errors; used to keep age/format/year messages instead of 'required'
   const [birthdateErrorReason, setBirthdateErrorReason] = useState<string | null>(null);
+
+  // Helper to clear validation UI and timers so fields appear neutral until user interaction
+  // Note: automatic validation clearing was removed per UX request so
+  // validation state persists unless explicitly changed by submit/blur logic.
   const handleSubmit = async () => {
     if (loading) return;
 
@@ -1119,38 +1154,15 @@ export default function LoginScreen() {
     try {
       saveLoginCache({ localValues: localValuesRef.current, formData }, isSignup ? 'signup' : 'login');
     } catch (e) {}
-    // After saving current mode, restore the target mode's cached inputs (if any)
+    // After saving current mode, defer restoring the target mode's cached inputs
+    // until the programmatic scroll finishes to avoid visual swapping while
+    // the slide animation is in progress.
     try {
       const targetCached = getLoginCache(isSignup ? 'login' : 'signup');
-      if (targetCached?.localValues) setLocalValues(prev => ({ ...prev, ...targetCached.localValues }));
-      if (targetCached?.formData) setFormData(prev => ({ ...prev, ...targetCached.formData }));
-    } catch (e) {}
-  // reset 'touched' tracking so validation doesn't immediately show on the other mode
-    touchedRef.current = {
-      login: {
-        email: false,
-        password: false,
-      },
-      signup: {
-        name: false,
-        lastName: false,
-        birthdate: false,
-        email: false,
-        username: false,
-        password: false,
-        confirmPassword: false,
-      }
-    };
-    setBirthdateErrorReason(null);
-    // Reset all field errors
-    setFieldErrors({
-      name: false,
-      username: false,
-      birthdate: false,
-      email: false,
-      password: false,
-      confirmPassword: false
-    });
+      pendingCacheRef.current = targetCached ?? null;
+    } catch (e) { pendingCacheRef.current = null; }
+  // Keep validation state and touched tracking intact so user-visible
+  // errors persist across toggles as requested.
   };
 
   // Keep scroll position synced to initial mode on mount
@@ -1210,6 +1222,15 @@ export default function LoginScreen() {
     // If this scroll was triggered programmatically, clear the guard
     if (isProgrammaticScrollRef.current) {
       isProgrammaticScrollRef.current = false;
+      // Apply any pending cached inputs now that the programmatic scroll ended
+      try {
+        if (pendingCacheRef.current) {
+          const pc = pendingCacheRef.current;
+          if (pc.localValues) setLocalValues(prev => ({ ...pc.localValues, ...prev }));
+          if (pc.formData) setFormData(prev => ({ ...pc.formData, ...prev }));
+        }
+      } catch (e) {}
+      pendingCacheRef.current = null;
       desiredPageRef.current = null;
     }
 
@@ -1220,10 +1241,32 @@ export default function LoginScreen() {
   const renderForm = (modeIsSignup: boolean) => {
     const signupMode = modeIsSignup;
   const visiblePassword = signupMode ? (localValues.password_signup || formData.password_signup) : (localValues.password_login || formData.password_login);
+  // Prefer live localValues for visible UI so the user never sees a cleared
+  // field while debounced commits to formData are pending or during animation.
+  const visibleName = (localValues.name && localValues.name.length > 0) ? localValues.name : formData.name;
+  const visibleLastName = (localValues.lastName && localValues.lastName.length > 0) ? localValues.lastName : formData.lastName;
+  const visibleBirthdate = (localValues.birthdate && localValues.birthdate.length > 0) ? localValues.birthdate : formData.birthdate;
+  const visibleEmail = signupMode ? ((localValues.email_signup && localValues.email_signup.length > 0) ? localValues.email_signup : formData.email_signup) : ((localValues.email_login && localValues.email_login.length > 0) ? localValues.email_login : formData.email_login);
+  const visibleUsername = (localValues.username && localValues.username.length > 0) ? localValues.username : formData.username;
+  const visibleConfirmPassword = (localValues.confirmPassword && localValues.confirmPassword.length > 0) ? localValues.confirmPassword : formData.confirmPassword;
     return (
       <>
         <View style={styles.welcomeContainer}>
-          <Ionicons name="flower-outline" size={60} color="#4DCCC1" />
+          <Svg width={75} height={75} viewBox="-35 -35 70 70">
+            {/* White circle background with outline */}
+            <Circle cx="0" cy="0" r="33" fill="#ffffff" stroke="#4dccc1" strokeWidth={1.5} />
+
+            {/* Petals */}
+            <Circle cx="0" cy="-20" r="8" fill="#10B981" />
+            <Circle cx="17" cy="-10" r="8" fill="#34D399" />
+            <Circle cx="17" cy="10" r="8" fill="#6EE7B7" />
+            <Circle cx="0" cy="20" r="8" fill="#059669" />
+            <Circle cx="-17" cy="10" r="8" fill="#047857" />
+            <Circle cx="-17" cy="-10" r="8" fill="#22C55E" />
+
+            {/* Center */}
+            <Circle cx="0" cy="0" r="6" fill="#1F2937" />
+          </Svg>
           <Text style={styles.welcomeText}>
             {signupMode ? t('auth.welcome_new', { o: i18n.language === 'es' ? (() => { const second = Math.floor(Date.now() / 1000) % 3; return second === 0 ? 'o' : second === 1 ? 'a' : 'e'; })() : 'o' }) : t('auth.welcome_back', { o: i18n.language === 'es' ? (() => { const second = Math.floor(Date.now() / 1000) % 3; return second === 0 ? 'o' : second === 1 ? 'a' : 'e'; })() : 'o' })}
           </Text>
@@ -1239,8 +1282,8 @@ export default function LoginScreen() {
                       style={[
                         styles.input,
                         styles.halfInput,
-                        (formData.name.length > 0 && !isValidName(formData.name)) || fieldErrors.name ? styles.inputError :
-                        formData.name.length > 0 && isValidName(formData.name) ? styles.validInput : null,
+                        (visibleName.length > 0 && !isValidName(visibleName)) || (fieldErrors.name && touchedRef.current.signup.name) ? styles.inputError :
+                        (visibleName.length > 0 && isValidName(visibleName)) ? styles.validInput : null,
                         isFieldPending('name') ? pendingStyle : null
                       ]}
                       placeholder={t('auth.fields.name')}
@@ -1260,11 +1303,17 @@ export default function LoginScreen() {
                       }}
                       ref={nameInputSignup}
                     />
-                    {!isFieldPending('name') && (fieldErrors.name ? (
-                      <Text style={styles.errorText}>{t('auth.errors.first_name_required')}</Text>
-                    ) : (formData.name.length > 0 && !isValidName(formData.name)) && (
-                      <Text style={styles.errorText}>{formData.name.length < 2 || formData.name.length > 15 ? t('auth.errors.invalid_name_length') : t('auth.errors.invalid_name')}</Text>
-                    ))}
+                    {!isFieldPending('name') && (
+                      (() => {
+                        if (fieldErrors.name && touchedRef.current.signup.name && (!visibleName || visibleName.length === 0)) {
+                          return <Text style={styles.errorText}>{t('auth.errors.first_name_required')}</Text>;
+                        }
+                        if (visibleName && visibleName.length > 0 && !isValidName(visibleName)) {
+                          return <Text style={styles.errorText}>{visibleName.length < 2 || visibleName.length > 15 ? t('auth.errors.invalid_name_length') : t('auth.errors.invalid_name')}</Text>;
+                        }
+                        return null;
+                      })()
+                    )}
                     {isFieldPending('name') && (
                       <Text style={[styles.changeLabel, { color: '#D97706', marginTop: 6, textAlign: 'left' }]}>{t('auth.status.loading')}{ellipsesText(ellipsesTick)}</Text>
                     )}
@@ -1275,7 +1324,7 @@ export default function LoginScreen() {
                       style={[
                         styles.input,
                         styles.halfInput,
-                        formData.lastName.length > 0 && (isValidName(formData.lastName) ? styles.validInput : styles.inputError),
+                        (visibleLastName.length > 0 && (isValidName(visibleLastName) ? styles.validInput : styles.inputError)),
                         isFieldPending('lastName') ? pendingStyle : null
                       ]}
                       placeholder={t('auth.fields.last_name')}
@@ -1293,7 +1342,7 @@ export default function LoginScreen() {
                       onSubmitEditing={() => { if (birthdateInputSignup.current) birthdateInputSignup.current.focus(); }}
                       ref={lastNameInputSignup}
                     />
-                    {!isFieldPending('lastName') && formData.lastName.length > 0 && !isValidName(formData.lastName) && (
+                    {!isFieldPending('lastName') && visibleLastName.length > 0 && !isValidName(visibleLastName) && (
                       <Text style={styles.errorText}>{t('auth.errors.invalid_name')}</Text>
                     )}
                     {isFieldPending('lastName') && (
@@ -1308,8 +1357,8 @@ export default function LoginScreen() {
                   style={[
                     styles.input,
                     styles.birthdateInput,
-                    (formData.birthdate.length > 0 && !isValidBirthDate(formData.birthdate)) || fieldErrors.birthdate ? styles.inputError :
-                    formData.birthdate.length > 0 && isValidBirthDate(formData.birthdate) ? styles.validInput : null,
+                    (visibleBirthdate.length > 0 && !isValidBirthDate(visibleBirthdate)) || (fieldErrors.birthdate && touchedRef.current.signup.birthdate) ? styles.inputError :
+                    (visibleBirthdate.length > 0 && isValidBirthDate(visibleBirthdate)) ? styles.validInput : null,
                     isFieldPending('birthdate') ? pendingStyle : null
                   ]}
                   placeholder={t('auth.birthdate_placeholder')}
@@ -1360,7 +1409,7 @@ export default function LoginScreen() {
                   ref={birthdateInputSignup}
                   onBlur={() => commitImmediately('birthdate', localValues.birthdate)}
                 />
-                {!isFieldPending('birthdate') && (fieldErrors.birthdate || (formData.birthdate.length > 0 && !isValidBirthDate(formData.birthdate))) && (
+                {!isFieldPending('birthdate') && ((fieldErrors.birthdate && touchedRef.current.signup.birthdate) || (visibleBirthdate.length > 0 && !isValidBirthDate(visibleBirthdate))) && (
                   <Text style={styles.errorText}>{birthdateErrorReason ? t(`auth.errors.${birthdateErrorReason}`) : (fieldErrors.birthdate ? t('auth.errors.birthdate_required') : t('auth.errors.invalid_birthdate'))}</Text>
                 )}
                 {isFieldPending('birthdate') && (
@@ -1376,14 +1425,14 @@ export default function LoginScreen() {
                 styles.input,
                 (() => {
                   if (!signupMode) {
-                    return fieldErrors.email ? styles.inputError : (formData.email_login.length >= 3 ? styles.validInput : null);
+                    return (fieldErrors.email && touchedRef.current.login.email) ? styles.inputError : (visibleEmail.length >= 3 ? styles.validInput : null);
                   }
                   // signup mode: error if field error, invalid format, or email is known-taken
-                  if (fieldErrors.email || (localValues.email_signup.length > 0 && !isValidEmail(localValues.email_signup)) || (localValues.email_signup.length > 0 && !emailAvailable)) {
+                  if ((fieldErrors.email && touchedRef.current.signup.email) || (visibleEmail.length > 0 && !isValidEmail(visibleEmail)) || (visibleEmail.length > 0 && !emailAvailable)) {
                     return styles.inputError;
                   }
                   // valid when we have a formatted email and it's available
-                  if (localValues.email_signup.length > 0 && isValidEmail(localValues.email_signup) && emailAvailable) {
+                  if (visibleEmail.length > 0 && isValidEmail(visibleEmail) && emailAvailable) {
                     return styles.validInput;
                   }
                   return null;
@@ -1429,16 +1478,16 @@ export default function LoginScreen() {
                 }
               }}
             />
-            {!isFieldPending('email') && ((signupMode && (fieldErrors.email || (formData.email_signup.length > 0 && !isValidEmail(formData.email_signup)))) || (!signupMode && (fieldErrors.email || (formData.email_login.length > 0 && formData.email_login.length < 3)))) && (
+            {!isFieldPending('email') && ((signupMode && ((fieldErrors.email && touchedRef.current.signup.email) || (visibleEmail.length > 0 && !isValidEmail(visibleEmail)))) || (!signupMode && ((fieldErrors.email && touchedRef.current.login.email) || (visibleEmail.length > 0 && visibleEmail.length < 3)))) && (
               <Text style={styles.errorText}>{(() => {
                 if (signupMode) {
-                  if (localValues.email_signup.length === 0) return t('auth.errors.email_required');
-                  if (!isValidEmail(localValues.email_signup)) return t('auth.errors.invalid_email');
+                  if (visibleEmail.length === 0) return t('auth.errors.email_required');
+                  if (!isValidEmail(visibleEmail)) return t('auth.errors.invalid_email');
                   return t('auth.errors.email_required');
                 }
                 // login mode
-                if (localValues.email_login.length === 0) return t('auth.errors.login_email_required');
-                if (localValues.email_login.length < 3) return t('auth.errors.username_too_short');
+                if (visibleEmail.length === 0) return t('auth.errors.login_email_required');
+                if (visibleEmail.length < 3) return t('auth.errors.username_too_short');
                 return null;
               })()}</Text>
             )}
@@ -1455,7 +1504,7 @@ export default function LoginScreen() {
               <TextInput
                 style={[
                   styles.input,
-                  (formData.username.length > 0 && (formData.username.length < 3 || !usernameAvailable)) || fieldErrors.username ? styles.inputError : formData.username.length > 0 && usernameAvailable && formData.username.length >= 3 ? styles.validInput : null,
+                  (visibleUsername.length > 0 && (visibleUsername.length < 3 || !usernameAvailable)) || (fieldErrors.username && touchedRef.current.signup.username) ? styles.inputError : visibleUsername.length > 0 && usernameAvailable && visibleUsername.length >= 3 ? styles.validInput : null,
                   isFieldPending('username') ? pendingStyle : null
                 ]}
                 placeholder={t('auth.fields.username')}
@@ -1483,7 +1532,7 @@ export default function LoginScreen() {
                 returnKeyType="next"
                 onSubmitEditing={() => { if (passwordInputSignup.current) passwordInputSignup.current.focus(); }}
               />
-              {!isFieldPending('username') && (checkingUsername ? (<Text style={styles.errorText}>{t('auth.status.checking_username')}</Text>) : (!usernameAvailable && formData.username.length >= 3) ? (<Text style={styles.errorText}>{t('auth.errors.username_taken', { username: formData.username })}</Text>) : (formData.username.length > 0 && formData.username.length < 3) ? (<Text style={styles.errorText}>{t('auth.errors.username_too_short')}</Text>) : fieldErrors.username ? (<Text style={styles.errorText}>{t('auth.errors.username_required')}</Text>) : null)}
+              {!isFieldPending('username') && (checkingUsername ? (<Text style={styles.errorText}>{t('auth.status.checking_username')}</Text>) : (!usernameAvailable && visibleUsername.length >= 3) ? (<Text style={styles.errorText}>{t('auth.errors.username_taken', { username: visibleUsername })}</Text>) : (visibleUsername.length > 0 && visibleUsername.length < 3) ? (<Text style={styles.errorText}>{t('auth.errors.username_too_short')}</Text>) : (fieldErrors.username && touchedRef.current.signup.username) ? (<Text style={styles.errorText}>{t('auth.errors.username_required')}</Text>) : null)}
               {isFieldPending('username') && (<Text style={[styles.changeLabel, { color: '#D97706', marginTop: 6, textAlign: 'left' }]}>{t('auth.status.loading')}{ellipsesText(ellipsesTick)}</Text>)}
             </View>
           )}
@@ -1492,7 +1541,7 @@ export default function LoginScreen() {
             <TextInput
               style={[
                 styles.passwordInput,
-                (signupMode ? (((formData.password_signup.length > 0) && !isValidPassword(formData.password_signup)) || fieldErrors.password ? styles.inputError : (formData.password_signup.length > 0 && isValidPassword(formData.password_signup) ? styles.validInput : null)) : (fieldErrors.password ? styles.inputError : (formData.password_login.length > 0 ? styles.validInput : null))),
+                (signupMode ? (((visiblePassword.length > 0) && !isValidPassword(visiblePassword)) || (fieldErrors.password && touchedRef.current.signup.password) ? styles.inputError : (visiblePassword.length > 0 && isValidPassword(visiblePassword) ? styles.validInput : null)) : ((fieldErrors.password && touchedRef.current.login.password) ? styles.inputError : (visiblePassword.length > 0 ? styles.validInput : null))),
                 isFieldPending('password') ? pendingStyle : null
               ]}
               placeholder={t('auth.fields.password')}
@@ -1510,15 +1559,13 @@ export default function LoginScreen() {
               returnKeyType={signupMode ? 'next' : 'done'}
               onSubmitEditing={() => { if (signupMode && confirmPasswordInputSignup.current) confirmPasswordInputSignup.current.focus(); else handleSubmit(); }}
             />
-            {!isFieldPending('password') && (signupMode ? (
-              (fieldErrors.password || (visiblePassword.length > 0 && !isValidPassword(visiblePassword))) && (
-                <Text style={styles.errorText}>{
-                  // If the field is completely empty show the required message,
-                  // otherwise show the detailed policy instruction.
-                  (!visiblePassword || visiblePassword.length === 0) ? t('auth.errors.password_required') : t('auth.errors.password_too_short')
-                }</Text>
-              )
-            ) : (fieldErrors.password && (<Text style={styles.errorText}>{t('auth.errors.login_password_required')}</Text>)))}
+            {!isFieldPending('password') && (
+              signupMode
+                ? (((fieldErrors.password && touchedRef.current.signup.password) || (visiblePassword.length > 0 && !isValidPassword(visiblePassword))) ? (
+                    <Text style={styles.errorText}>{(!visiblePassword || visiblePassword.length === 0) ? t('auth.errors.password_required') : t('auth.errors.password_too_short')}</Text>
+                  ) : null)
+                : ((fieldErrors.password && touchedRef.current.login.password) ? <Text style={styles.errorText}>{t('auth.errors.login_password_required')}</Text> : null)
+            )}
             {isFieldPending('password') && (<Text style={[styles.changeLabel, { color: '#D97706', marginTop: 6, textAlign: 'left' }]}>{t('auth.status.loading')}{ellipsesText(ellipsesTick)}</Text>)}
             <TouchableOpacity style={styles.eyeIcon} onPress={() => setShowPassword(!showPassword)}>
               <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={24} color="#4A6563" />
@@ -1530,8 +1577,8 @@ export default function LoginScreen() {
               <TextInput
                 style={[
                   styles.passwordInput,
-                  formData.confirmPassword.length > 0 && (formData.confirmPassword === formData.password_signup ? styles.validInput : styles.inputError),
-                  fieldErrors.confirmPassword && styles.inputError,
+                  (visibleConfirmPassword.length > 0 && (visibleConfirmPassword === (signupMode ? (localValues.password_signup || formData.password_signup) : (localValues.password_login || formData.password_login))) ? styles.validInput : visibleConfirmPassword.length > 0 ? styles.inputError : null),
+                  (fieldErrors.confirmPassword && touchedRef.current.signup.confirmPassword) && styles.inputError,
                   isFieldPending('confirmPassword') ? pendingStyle : null
                 ]}
                 placeholder={t('auth.fields.confirm_password')}
@@ -1549,9 +1596,9 @@ export default function LoginScreen() {
               />
               {!isFieldPending('confirmPassword') && (
                 // Show 'please confirm' only when the field is empty; show mismatch when non-empty but different
-                (localValues.confirmPassword.length === 0 && fieldErrors.confirmPassword) ? (
+                (visibleConfirmPassword.length === 0 && fieldErrors.confirmPassword) ? (
                   <Text style={styles.errorText}>{t('auth.errors.confirm_password_required')}</Text>
-                ) : (localValues.confirmPassword.length > 0 && localValues.password_signup.length > 0 && localValues.confirmPassword !== localValues.password_signup) ? (
+                ) : (visibleConfirmPassword.length > 0 && (signupMode ? (localValues.password_signup || formData.password_signup) : (localValues.password_login || formData.password_login)).length > 0 && visibleConfirmPassword !== (signupMode ? (localValues.password_signup || formData.password_signup) : (localValues.password_login || formData.password_login))) ? (
                   <Text style={styles.errorText}>{t('auth.errors.passwords_mismatch')}</Text>
                 ) : null
               )}
@@ -1562,15 +1609,21 @@ export default function LoginScreen() {
             </View>
           )}
 
-          <TouchableOpacity style={[styles.button, loading && styles.buttonDisabled]} onPress={handleSubmit} disabled={loading}>
+          <TouchableOpacity
+            style={[styles.button, loading && styles.buttonDisabled]}
+            onPress={handleSubmit}
+            disabled={loading}
+            accessibilityRole="button"
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
             <Text style={styles.buttonText}>{loading ? t('auth.status.loading') : signupMode ? t('auth.buttons.signup') : t('auth.buttons.login')}</Text>
           </TouchableOpacity>
 
-          <View style={{ marginTop: 0, alignItems: 'center' }}>
-            <Text style={{ color: '#6B7280' }}>
-              {String(signupMode ? t('auth.links.have_account') : t('auth.links.no_account')).trimEnd() + ' '}
-              <Text onPress={toggleMode} style={{ color: '#4dccc1', fontWeight: '700' }}>{signupMode ? t('auth.buttons.login') : t('auth.buttons.signup')}</Text>
-            </Text>
+          <View style={{ marginTop: 0, alignItems: 'center', flexDirection: 'row', justifyContent: 'center' }}>
+            <Text style={{ color: '#6B7280' }}>{String(signupMode ? t('auth.links.have_account') : t('auth.links.no_account')).trimEnd()}</Text>
+            <TouchableOpacity onPress={toggleMode} style={{ marginLeft: 6 }} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }} accessibilityRole="button">
+              <Text style={{ color: '#4dccc1', fontWeight: '700' }}>{signupMode ? t('auth.buttons.login') : t('auth.buttons.signup')}</Text>
+            </TouchableOpacity>
           </View>
 
           {signupMode && (
@@ -1789,7 +1842,7 @@ export default function LoginScreen() {
 
         {/* Plan button (fades when switching to login) */}
         <View style={{ marginLeft: 0 }}>
-          <TouchableOpacity
+        <TouchableOpacity
             style={[styles.planButton, plansInvalid ? styles.planButtonInvalid : null]}
               onPress={() => {
               try {
@@ -1797,7 +1850,9 @@ export default function LoginScreen() {
                 // won't clear the typed values when the user returns.
                 saveLoginCache({ localValues: localValuesRef.current, formData }, isSignup ? 'signup' : 'login');
               } catch (e) {}
-              setPlansInvalid(false); router.push('/ign-onboarding?from=login' as any);
+          // Blur inputs before navigating (preserve validation state)
+          try { blurAllInputs(); } catch (e) {}
+        setPlansInvalid(false); router.push('/ign-onboarding?from=login' as any);
             }}
           >
             <View style={[styles.planHalf, styles.planLeft, { paddingRight: 8 }]}> 
@@ -1914,8 +1969,7 @@ export default function LoginScreen() {
       )}
 
   {/* Main content */}
-      <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-        <View style={{ flex: 1 }}>
+      <View style={{ flex: 1 }}>
           <Animated.View
             style={[
               styles.container,
@@ -1938,7 +1992,8 @@ export default function LoginScreen() {
               onMomentumScrollEnd={onAuthScrollEnd}
               contentContainerStyle={{ flexDirection: 'row', alignItems: 'center' }}
               scrollEventThrottle={16}
-              keyboardShouldPersistTaps="handled"
+              keyboardShouldPersistTaps="always"
+              keyboardDismissMode="on-drag"
             >
               {/* Pane 1: Signup (left) - full window page that centers inner content */}
               <Animated.View
@@ -1966,8 +2021,7 @@ export default function LoginScreen() {
             </ScrollView>
           </Animated.View>
         </View>
-      </TouchableWithoutFeedback>
-    </View>
+  </View>
     </Providers>
   );
 };
@@ -2236,7 +2290,8 @@ const getThemedStyles = (isDark: boolean) => StyleSheet.create({
     color: '#4DCCC1',
     fontSize: 16,
     fontWeight: '600',
-    minWidth: 60,
+  width: '100%',
+  textAlign: 'center',
   },
   buttonDisabled: {
     opacity: 0.7,

@@ -3,19 +3,19 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-    ActivityIndicator,
-    Animated,
-    Dimensions,
-    Easing,
-    InteractionManager,
-    Pressable,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    TouchableWithoutFeedback,
-    View
+  ActivityIndicator,
+  Animated,
+  Dimensions,
+  Easing,
+  InteractionManager,
+  Pressable,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  TouchableWithoutFeedback,
+  View
 } from 'react-native';
-import Svg, { Circle, G, Text as SvgText } from 'react-native-svg';
+import Svg, { Circle } from 'react-native-svg';
 import { useAuth } from '../../contexts/AuthContext';
 import { useUser } from '../../contexts/UserContext';
 // plan export removed: exporter logic intentionally disabled to avoid bundling/auto-export
@@ -943,22 +943,22 @@ export default function Onboarding() {
   ], []);
 
   // Memoized components
-  const Logo = useMemo(() => ({ width = 340, height = 102 }: { width?: number; height?: number }) => (
-    <Svg width={width} height={height} viewBox="0 0 500 150" preserveAspectRatio="xMidYMid meet">
-      <G transform="translate(129,75)">
-        <Circle cx="0" cy="-20" r="8" fill={svgColors.petals[0]} />
-        <Circle cx="17" cy="-10" r="8" fill={svgColors.petals[1]} />
-        <Circle cx="17" cy="10" r="8" fill={svgColors.petals[2]} />
-        <Circle cx="0" cy="20" r="8" fill={svgColors.petals[3]} />
-        <Circle cx="-17" cy="10" r="8" fill={svgColors.petals[4]} />
-        <Circle cx="-17" cy="-10" r="8" fill={svgColors.petals[5]} />
-        <Circle cx="0" cy="0" r="6" fill={svgColors.center} />
-      </G>
-      <G>
-        <SvgText x="179" y="93" fontFamily="system-ui, -apple-system, sans-serif" fontSize="52" fontWeight="900" fill={svgColors.text}>
-          Florescer
-        </SvgText>
-      </G>
+  const Logo = useMemo(() => ({ width = 75, height = 75 }: { width?: number; height?: number }) => (
+    // Center the flower within the provided width/height using xMidYMid
+    <Svg width={width} height={height} viewBox="-35 -35 70 70" preserveAspectRatio="xMidYMid meet">
+      {/* White circle background with outline */}
+      <Circle cx="0" cy="0" r="33" fill="#FFFFFF" stroke="#4dccc1" strokeWidth={2} />
+
+      {/* Petals */}
+      <Circle cx="0" cy="-20" r="8" fill={svgColors.petals[0]} />
+      <Circle cx="17" cy="-10" r="8" fill={svgColors.petals[1]} />
+      <Circle cx="17" cy="10" r="8" fill={svgColors.petals[2]} />
+      <Circle cx="0" cy="20" r="8" fill={svgColors.petals[3]} />
+      <Circle cx="-17" cy="10" r="8" fill={svgColors.petals[4]} />
+      <Circle cx="-17" cy="-10" r="8" fill={svgColors.petals[5]} />
+
+      {/* Center */}
+      <Circle cx="0" cy="0" r="6" fill={svgColors.center} />
     </Svg>
   ), [svgColors]);
   // Logo component
@@ -1124,7 +1124,7 @@ export default function Onboarding() {
           {/* Step 1: Primary choice */}
           <View style={{ width: size.width, height: size.height, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
             <View style={{ alignItems: 'center', width: '100%' }}>
-              <View style={{ alignItems: 'center', marginBottom: 15 }}>
+              <View style={{ alignItems: 'center', marginBottom: 45 }}>
                 <Logo />
               </View>
               
@@ -1284,7 +1284,7 @@ export default function Onboarding() {
           <View style={{ width: size.width, height: size.height, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
             <View style={{ alignItems: 'center', width: '100%' }}>
               {/* Logo for step 2: sits 15px above the heading */}
-              <View style={{ alignItems: 'center', marginBottom: 15 }}>
+              <View style={{ alignItems: 'center', marginBottom: 45 }}>
                 <Logo />
               </View>
               
