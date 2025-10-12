@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "appflorescer",
+    "name": "Florescer",
     "slug": "appflorescer",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -19,7 +19,8 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.florescer.app"
     },
     "web": {
       "output": "static",
@@ -35,7 +36,7 @@
           "resizeMode": "contain",
           "backgroundColor": "#ffffff",
           "dark": {
-            "backgroundColor": "#000000"
+            "backgroundColor": "#ffffff"
           }
         }
       ]
@@ -43,6 +44,13 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "74ba3ae1-efd9-4cca-a572-6a6ca194d8f1"
+      }
+    },
+    "owner": "debslegal"
   }
 }
