@@ -215,4 +215,10 @@ export default {
     good_afternoon: 'Good Afternoon',
     good_evening: 'Good Evening'
   }
+  ,
+  journal: {
+    intro_title: 'Try journaling',
+    intro_body: 'Journaling is a simple, therapeutic practice that helps you process emotions, reduce stress, and notice patterns over time. Try writing a quick entry. Even a few sentences can bring clarity and calm.',
+    write_button: 'Write'
+  }
 } as const;

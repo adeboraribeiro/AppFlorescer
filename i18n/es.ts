@@ -209,4 +209,10 @@ export default {
     good_afternoon: 'Buenas tardes',
     good_evening: 'Buenas noches'
   }
+  ,
+  journal: {
+    intro_title: 'Intenta escribir en un diario',
+    intro_body: 'Escribir un diario es una práctica terapéutica sencilla que te ayuda a procesar emociones, reducir el estrés y notar patrones con el tiempo. Intenta hacer un registro rápido. Incluso unas pocas frases pueden aportar claridad y calma.',
+    write_button: 'Escribir'
+  }
 } as const;

@@ -934,6 +934,46 @@ export default function TabsLayoutA() {
   const suppressChrome = activeSegment.startsWith('ign-');
   const [enabledModules, setEnabledModules] = useState<string[]>([]);
   const [visibleSlots, setVisibleSlots] = useState<boolean[]>(Array(5).fill(true));
+  // Global overlay state: screens can request an overlay by emitting events
+  const [overlay, setOverlay] = useState<{ name: string; props?: any } | null>(null);
+
+  const [overlayComp, setOverlayComp] = useState<React.ComponentType<any> | null>(null);
+
+  useEffect(() => {
+    const showSub = DeviceEventEmitter.addListener('globalOverlayShow', (payload: any) => {
+      try { setOverlay(payload); } catch (e) { /* ignore */ }
+    });
+
+    const hiddenSub = DeviceEventEmitter.addListener('globalOverlayHidden', () => {
+      // overlay finished hiding; clear host state
+      setOverlay(null);
+    });
+
+    return () => { showSub.remove(); hiddenSub.remove(); };
+  }, []);
+
+  // When overlay changes, lazy-load the component module to avoid circular import errors
+  useEffect(() => {
+    let mounted = true;
+    if (!overlay) {
+      setOverlayComp(null);
+      return;
+    }
+    if (overlay.name === 'EntryCreator') {
+      // dynamic import so bundler resolves dependencies safely
+      import('../../components/entrycreator')
+        .then(mod => {
+          if (mounted) setOverlayComp(() => mod.default || null);
+        })
+        .catch(err => {
+          console.warn('[TabsLayout] failed to import EntryCreator', err);
+          if (mounted) setOverlayComp(null);
+        });
+    } else {
+      setOverlayComp(null);
+    }
+    return () => { mounted = false; };
+  }, [overlay]);
 
   useEffect(() => {
     // initializer that prefers server-stored selectedmodules, falls back to AsyncStorage
@@ -1029,6 +1069,13 @@ export default function TabsLayoutA() {
             return { id: mod.id, labelKey: mod.labelKey, icon: mod.icon, route: mod.route };
           })}
         />
+      ) : null}
+      {/* Global overlay host - renders overlays above header/slot/tabbar */}
+      {overlay && overlayComp ? (
+        // Host overlay in a full-screen absolute container so it covers header/tabbar
+        <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99999 }} pointerEvents="box-none">
+          {React.createElement(overlayComp, { ...(overlay.props || {}) })}
+        </View>
       ) : null}
     </>
   );

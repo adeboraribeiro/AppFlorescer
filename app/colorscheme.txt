@@ -1,0 +1,16 @@
+1. 2 states buttons (usually save buttons)
+outline active: #4dccc1
+disabbled outline:#9CCFC8
+disabled bg: isDark ? 'rgba(15,118,110,0.20)' : 'rgba(15,118,110,0.20)'
+bg: 
+active text #4dccc1
+disabbled text: #9CCFC8
+
+2. 1 state buttons;
+1. outline & text: #4dccc1
+bg: isDark ? 'rgba(15, 118, 109, 0.85)' : 'rgba(15, 118, 109, 0.85)'
+
+3. general, screens.
+text (general): ALWAYS 4dccc1
+Ooutlines: ALWAYS 0.7
+bg: #0A1E1C' : '#ffffffff';

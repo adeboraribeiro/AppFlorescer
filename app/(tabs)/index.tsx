@@ -114,7 +114,7 @@ export default function splash() {
     // Initial animations for logo
     // Initial animations for logo — add 500ms extra delay before they start
     Animated.sequence([
-      Animated.delay(150),
+      Animated.delay(300),
       Animated.parallel([
         Animated.timing(fadeAnim, {
           toValue: 1,
