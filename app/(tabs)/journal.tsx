@@ -2,7 +2,8 @@ import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Animated, DeviceEventEmitter, Dimensions, Easing, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-// EntryCreator will be shown via the global overlay host in the tabs layout
+// entcreator will be shown via the global overlay host in the tabs layout
+import EntCreator from '../../components/entcreator';
 import { useTheme } from '../../contexts/ThemeContext';
 
 export default function Journal() {
@@ -83,7 +84,7 @@ export default function Journal() {
   };
   const openCreator = () => {
     try {
-      DeviceEventEmitter.emit('globalOverlayShow', { name: 'EntryCreator', props: { visible: true, onSave: handleSaveEntry } });
+      DeviceEventEmitter.emit('globalOverlayShow', { component: EntCreator, props: { visible: true, onSave: handleSaveEntry } });
     } catch (e) { console.warn('failed to emit overlay show', e); }
   };
 
@@ -108,7 +109,7 @@ export default function Journal() {
         {/* Bottom spacer: reserve blank area so centerArea stays centered above it */}
         <View style={styles.bottomBlock} />
       </View>
-  {/* EntryCreator is shown via the global overlay host in the tabs layout */}
+  {/* entcreator is shown via the global overlay host in the tabs layout */}
     </Animated.View>
   );
 }

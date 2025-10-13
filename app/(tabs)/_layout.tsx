@@ -935,13 +935,13 @@ export default function TabsLayoutA() {
   const [enabledModules, setEnabledModules] = useState<string[]>([]);
   const [visibleSlots, setVisibleSlots] = useState<boolean[]>(Array(5).fill(true));
   // Global overlay state: screens can request an overlay by emitting events
-  const [overlay, setOverlay] = useState<{ name: string; props?: any } | null>(null);
+  const [overlay, setOverlay] = useState<{ name: string; props?: any; component?: React.ComponentType<any> } | null>(null);
 
   const [overlayComp, setOverlayComp] = useState<React.ComponentType<any> | null>(null);
 
   useEffect(() => {
     const showSub = DeviceEventEmitter.addListener('globalOverlayShow', (payload: any) => {
-      try { setOverlay(payload); } catch (e) { /* ignore */ }
+  try { setOverlay(payload); } catch (e) { /* ignore */ }
     });
 
     const hiddenSub = DeviceEventEmitter.addListener('globalOverlayHidden', () => {
@@ -959,14 +959,18 @@ export default function TabsLayoutA() {
       setOverlayComp(null);
       return;
     }
-    if (overlay.name === 'EntryCreator') {
-      // dynamic import so bundler resolves dependencies safely
-      import('../../components/entrycreator')
+    // If callers directly provide a component in the payload, use it (journal will import and pass the component).
+    if (overlay.component) {
+      const comp = overlay.component as React.ComponentType<any>;
+      setOverlayComp(() => comp);
+    } else if (overlay.name === 'entcreator' || overlay.name === 'edit-entry') {
+      // Backwards-compatible dynamic import if a name is provided. Prefer callers to import and pass the component.
+      import('../../components/entcreator')
         .then(mod => {
           if (mounted) setOverlayComp(() => mod.default || null);
         })
         .catch(err => {
-          console.warn('[TabsLayout] failed to import EntryCreator', err);
+          console.warn('[TabsLayout] failed to import entcreator', err);
           if (mounted) setOverlayComp(null);
         });
     } else {
