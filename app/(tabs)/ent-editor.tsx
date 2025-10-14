@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useTheme } from '../../contexts/ThemeContext';
-import { getEntry, updateEntry } from '../../lib/entries';
+import entryStore from '../../lib/entries';
 
 export default function EditEntryView() {
   const { theme } = useTheme();
@@ -14,29 +14,53 @@ export default function EditEntryView() {
   const params = useLocalSearchParams();
   const entryId = params.id as string;
 
-  const [title, setTitle] = useState('');
+  // Get title and number from URL params if available (from EntCreator)
+  const initialTitle = typeof params.title === 'string' ? decodeURIComponent(params.title) : '';
+  const entryNumber = typeof params.number === 'string' ? parseInt(params.number, 10) : 0;
+  const [title, setTitle] = useState(initialTitle);
   const [body, setBody] = useState('');
 
-  const handleSave = () => {
-    if (!title.trim()) return;
-    const payload = { title: title.trim(), body: body.trim() };
-    const updated = updateEntry(entryId, payload);
-    if (!updated) {
-      const { createEntry } = require('../../lib/entries');
-      createEntry({ id: entryId, ...payload, date: new Date().toISOString() } as any);
+  const handleSave = async () => {
+    const trimmedTitle = title.trim();
+    const trimmedBody = body.trim();
+    
+    // Require both title and body
+    if (!trimmedTitle || !trimmedBody) return;
+    
+    const baseWord = t('entry.new').toLowerCase().startsWith('new') ? 'Entry' : 'Registro';
+    const payload = { 
+      title: entryNumber > 0 ? `${baseWord} ${entryNumber}` : trimmedTitle, 
+      body: trimmedBody,
+      // Use the date from params if available, otherwise use current date
+      date: params.date ? decodeURIComponent(params.date as string) : new Date().toISOString()
+    };
+
+    try {
+      const updated = entryId ? await entryStore.updateEntry(entryId, payload) : null;
+      if (!updated) {
+        await entryStore.createEntry(payload);
+      }
+      router.back();
+    } catch (e) {
+      console.warn('Failed to save entry:', e);
     }
-    router.back();
   };
 
   useEffect(() => {
     if (entryId) {
-      const e = getEntry(entryId);
-      if (e) {
-        setTitle(e.title);
-        setBody(e.body || '');
-      }
+      const loadEntry = async () => {
+        const e = await entryStore.getEntry(entryId);
+        if (e) {
+          // Only set title from storage if we don't have an initial title from params
+          if (!initialTitle) {
+            setTitle(e.title);
+          }
+          setBody(e.body || '');
+        }
+      };
+      loadEntry();
     }
-  }, [entryId]);
+  }, [entryId, initialTitle]);
 
   const placeholderColor = isDark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.3)';
 
@@ -53,19 +77,22 @@ export default function EditEntryView() {
         <View style={styles.headerCenter}>
                 <Text style={styles.headerTitle}>{t('entry.edit')}</Text>
         </View>
-  <TouchableOpacity onPress={handleSave} disabled={!title.trim()} style={styles.saveTouch}>
+  <TouchableOpacity 
+          onPress={handleSave} 
+          disabled={!title.trim() || !body.trim()} 
+          style={styles.saveTouch}>
           <View style={[
             styles.saveButton,
             {
-              backgroundColor: !title.trim() 
+              backgroundColor: !title.trim() || !body.trim()
                 ? (isDark ? 'rgba(77,204,193,0.08)' : 'rgba(77,204,193,0.08)')
                 : (isDark ? 'rgba(77,204,193,0.15)' : 'rgba(77,204,193,0.15)'),
-              borderColor: !title.trim() ? '#9CCFC8' : '#4dccc1',
-              opacity: !title.trim() ? 0.6 : 1
+              borderColor: !title.trim() || !body.trim() ? '#9CCFC8' : '#4dccc1',
+              opacity: !title.trim() || !body.trim() ? 0.6 : 1
             }
           ]}>
             <Text style={[styles.saveText, { 
-              color: !title.trim() ? '#9CCFC8' : '#4dccc1',
+              color: !title.trim() || !body.trim() ? '#9CCFC8' : '#4dccc1',
             }]}>
               {t('entry.save')}
             </Text>

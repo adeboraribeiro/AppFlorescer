@@ -219,7 +219,9 @@ export default {
   journal: {
     intro_title: 'Try journaling',
     intro_body: 'Journaling is a simple, therapeutic practice that helps you process emotions, reduce stress, and notice patterns over time. Try writing a quick entry. Even a few sentences can bring clarity and calm.',
-    write_button: 'Write'
+    write_button: 'Write',
+    delete_confirm: 'Delete this entry?',
+    delete_entry_message: 'This entry will be permanently deleted and cannot be recovered.'
   }
   ,
   entry: {
@@ -230,7 +232,7 @@ export default {
     start_writing: 'Start writing your entry...',
     save: 'Save'
   ,
-  new: 'New journal entry',
+  new: 'New Journal Entry',
     entry_title: 'Entry title',
   date_placeholder: 'DD/MM/YYYY',
   invalid_date: 'Invalid date format',

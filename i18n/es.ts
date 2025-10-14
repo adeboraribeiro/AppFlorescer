@@ -213,7 +213,9 @@ export default {
   journal: {
     intro_title: 'Intenta escribir en un diario',
     intro_body: 'Escribir un diario es una práctica terapéutica sencilla que te ayuda a procesar emociones, reducir el estrés y notar patrones con el tiempo. Intenta hacer un registro rápido. Incluso unas pocas frases pueden aportar claridad y calma.',
-    write_button: 'Escribir'
+    write_button: 'Escribir',
+    delete_confirm: '¿Eliminar este registro?',
+    delete_entry_message: 'Este registro se eliminará permanentemente y no se podrá recuperar.'
   }
   ,
   entry: {
@@ -224,8 +226,8 @@ export default {
     start_writing: 'Comienza a escribir tu registro...',
     save: 'Guardar'
   ,
-  new: 'Nuevo registro',
-    entry_title: 'Título del registro',
+  new: 'Nuevo Registro de Diario',
+    entry_title: 'Título del Registro',
   date_placeholder: 'DD/MM/YYYY',
   invalid_date: 'Formato de fecha inválido',
   create: 'Crear registro'

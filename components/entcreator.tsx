@@ -5,7 +5,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Animated, DeviceEventEmitter, Dimensions, Keyboard, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useTheme } from '../contexts/ThemeContext';
-import { createEntry as createEntryLocal } from '../lib/entries';
+import entryStore from '../lib/entries';
 
 type Props = {
   visible?: boolean;
@@ -42,6 +42,25 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
 
   const [title, setTitle] = useState('');
   
+  // Generate default title when the creator opens
+  useEffect(() => {
+    if (visible) {
+      const generateDefaultTitle = async () => {
+        const entries = await entryStore.listEntries();
+        const nextNumber = entries.length + 1;
+        // Store the entry number for later use
+        setEntryNumber(nextNumber);
+        // Get base word based on current language
+        const baseWord = t('entry.new').toLowerCase().startsWith('new') ? 'Entry' : 'Registro';
+        setTitle(`${baseWord} ${nextNumber}`);
+      };
+      generateDefaultTitle();
+    }
+  }, [visible, t]);
+
+  // Keep track of the entry number
+  const [entryNumber, setEntryNumber] = useState<number>(0);
+
   const formatDate = (d: Date) => {
     const dd = String(d.getDate()).padStart(2, '0');
     const mm = String(d.getMonth() + 1).padStart(2, '0');
@@ -103,7 +122,7 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
     return true;
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!title.trim()) return;
     if (!isValidDateStr(dateStr)) {
       setIsDateInvalid(true);
@@ -111,21 +130,15 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
     }
     const [d, m, y] = dateStr.split('/').map(Number);
     const iso = new Date(y, m - 1, d).toISOString();
-    const newId = `${Date.now()}-${Math.random().toString(36).slice(2,9)}`;
-  const payload = { id: newId, title: title.trim(), date: iso };
     
-    try {
-      if (onSave) {
-        onSave(payload);
-      } else {
-        createEntryLocal(payload as any);
-      }
-    } catch (e) { /* ignore */ }
-    
-    try {
-      // navigate to the ent-editor page under (tabs) and pass the new id
-      router.push(`/(tabs)/ent-editor?id=${encodeURIComponent(newId)}`);
-    } catch (e) { /* ignore navigation errors */ }
+    if (onSave) {
+      onSave({ title: title.trim(), date: iso });
+    } else {
+      try {
+        // Navigate to editor with title, date, and entry number
+        router.push(`/(tabs)/ent-editor?title=${encodeURIComponent(title.trim())}&date=${encodeURIComponent(iso)}&number=${entryNumber}`);
+      } catch (e) { /* ignore navigation errors */ }
+    }
   };
 
   const onChangeDateStr = (text: string) => {

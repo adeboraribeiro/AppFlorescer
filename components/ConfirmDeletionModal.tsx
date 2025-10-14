@@ -3,29 +3,31 @@ import { BlurView } from 'expo-blur';
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-    Animated,
-    Modal,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View
+  Animated,
+  Modal,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View
 } from 'react-native';
 
 interface ConfirmDeletionModalProps {
   isVisible: boolean;
   onClose: () => void;
   onConfirm: () => void;
-  // `moduleLabel` should be the already-translated display string for the module
+  // For module deletion
   moduleLabel?: string;
+  // For custom deletion messages
+  title?: string;
+  message?: string;
 }
 
-export default function ConfirmDeletionModal({ isVisible, onClose, onConfirm, moduleLabel }: ConfirmDeletionModalProps) {
+export default function ConfirmDeletionModal({ isVisible, onClose, onConfirm, moduleLabel, title: customTitle, message: customMessage }: ConfirmDeletionModalProps) {
   const { t } = useTranslation();
   const moduleDisplay = moduleLabel ?? '';
-  // Interpolated title: e.g. "Remove Partnership?"
-  const title = t('modules.delete_confirm', { module: moduleDisplay }) || `Remove ${moduleDisplay || 'this module'}?`;
-  // Interpolated message explaining consequences
-  const message = t('modules.delete_message', { module: moduleDisplay }) || `If you remove ${moduleDisplay || 'this module'}, all data associated with it will be permanently deleted and cannot be recovered.`;
+  // Use custom title/message if provided, otherwise use module deletion messages
+  const title = customTitle ?? (t('modules.delete_confirm', { module: moduleDisplay }) || `Remove ${moduleDisplay || 'this module'}?`);
+  const message = customMessage ?? (t('modules.delete_message', { module: moduleDisplay }) || `If you remove ${moduleDisplay || 'this module'}, all data associated with it will be permanently deleted and cannot be recovered.`);
 
   // Local visibility so we can animate out before unmounting modal
   const [localVisible, setLocalVisible] = useState<boolean>(!!isVisible);

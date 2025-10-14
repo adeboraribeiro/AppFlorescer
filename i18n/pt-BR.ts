@@ -212,7 +212,9 @@ export default {
   journal: {
     intro_title: 'Experimente escrever um diário',
     intro_body: 'Escrever um diário é uma prática terapêutica simples que ajuda a processar emoções, reduzir o estresse e perceber padrões ao longo do tempo. Tente fazer um registro rápido. Mesmo algumas frases podem trazer clareza e calma.',
-    write_button: 'Escrever'
+    write_button: 'Escrever',
+    delete_confirm: 'Excluir este registro?',
+    delete_entry_message: 'Este registro será excluído permanentemente e não poderá ser recuperado.'
   }
   ,
   entry: {
@@ -223,7 +225,7 @@ export default {
     start_writing: 'Comece a escrever seu registro...',
     save: 'Salvar'
   ,
-  new: 'Novo Registro',
+  new: 'Novo Registro de Diário',
     entry_title: 'Título do Registro',
   date_placeholder: 'DD/MM/YYYY',
   invalid_date: 'Formato de data inválido',
