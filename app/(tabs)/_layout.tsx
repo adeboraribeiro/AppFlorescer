@@ -929,9 +929,9 @@ export default function TabsLayoutA() {
   const { theme } = useTheme();
   const { userProfile } = useUser();
   const segments = useSegments();
-  // Hide header/tabbar when route segment begins with 'ign-'
+  // Hide header/tabbar when route segment begins with 'ign-' or when viewing the ent-editor route
   const activeSegment = Array.isArray(segments) && segments.length > 0 ? String(segments[segments.length - 1]) : '';
-  const suppressChrome = activeSegment.startsWith('ign-');
+  const suppressChrome = activeSegment.startsWith('ign-') || activeSegment === 'ent-editor';
   const [enabledModules, setEnabledModules] = useState<string[]>([]);
   const [visibleSlots, setVisibleSlots] = useState<boolean[]>(Array(5).fill(true));
   // Global overlay state: screens can request an overlay by emitting events

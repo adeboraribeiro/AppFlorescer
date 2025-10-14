@@ -221,4 +221,19 @@ export default {
     intro_body: 'Journaling is a simple, therapeutic practice that helps you process emotions, reduce stress, and notice patterns over time. Try writing a quick entry. Even a few sentences can bring clarity and calm.',
     write_button: 'Write'
   }
+  ,
+  entry: {
+    edit: 'Edit Entry',
+    title: 'Title',
+    enter_title: 'Enter title...',
+    content: 'Content',
+    start_writing: 'Start writing your entry...',
+    save: 'Save'
+  ,
+  new: 'New journal entry',
+    entry_title: 'Entry title',
+  date_placeholder: 'DD/MM/YYYY',
+  invalid_date: 'Invalid date format',
+  create: 'Create Entry'
+  }
 } as const;

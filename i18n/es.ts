@@ -215,4 +215,19 @@ export default {
     intro_body: 'Escribir un diario es una práctica terapéutica sencilla que te ayuda a procesar emociones, reducir el estrés y notar patrones con el tiempo. Intenta hacer un registro rápido. Incluso unas pocas frases pueden aportar claridad y calma.',
     write_button: 'Escribir'
   }
+  ,
+  entry: {
+    edit: 'Editar registro',
+    title: 'Título',
+    enter_title: 'Ingrese el título...',
+    content: 'Contenido',
+    start_writing: 'Comienza a escribir tu registro...',
+    save: 'Guardar'
+  ,
+  new: 'Nuevo registro',
+    entry_title: 'Título del registro',
+  date_placeholder: 'DD/MM/YYYY',
+  invalid_date: 'Formato de fecha inválido',
+  create: 'Crear registro'
+  }
 } as const;

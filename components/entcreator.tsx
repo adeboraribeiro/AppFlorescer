@@ -2,6 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Animated, DeviceEventEmitter, Dimensions, Keyboard, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useTheme } from '../contexts/ThemeContext';
 import { createEntry as createEntryLocal } from '../lib/entries';
@@ -14,6 +15,7 @@ type Props = {
 
 export default function EntCreator({ visible = false, onClose, onSave }: Props) {
   const { theme } = useTheme();
+  const { t } = useTranslation();
   const router = useRouter();
   const isDark = theme === 'dark';
   const WINDOW = Dimensions.get('window');
@@ -39,7 +41,6 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
   }, [animatedShift]);
 
   const [title, setTitle] = useState('');
-  const [body, setBody] = useState('');
   
   const formatDate = (d: Date) => {
     const dd = String(d.getDate()).padStart(2, '0');
@@ -59,9 +60,8 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
         Animated.timing(scaleAnim, { toValue: 0.92, duration: 200, useNativeDriver: true })
       ]).start(() => {
         setRenderVisible(false);
-        setTitle(''); 
-        setBody(''); 
-        setDateStr(formatDate(new Date())); 
+          setTitle(''); 
+          setDateStr(formatDate(new Date())); 
         setIsDateInvalid(false);
         try { DeviceEventEmitter.emit('globalOverlayHidden'); } catch (e) { /* ignore */ }
         onClose?.();
@@ -81,10 +81,9 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
         Animated.timing(fadeAnim, { toValue: 0, duration: 200, useNativeDriver: true }),
         Animated.timing(scaleAnim, { toValue: 0.92, duration: 200, useNativeDriver: true })
       ]).start(() => {
-        setRenderVisible(false);
-        setTitle(''); 
-        setBody(''); 
-        setDateStr(formatDate(new Date())); 
+  setRenderVisible(false);
+  setTitle(''); 
+  setDateStr(formatDate(new Date())); 
         setIsDateInvalid(false);
         try { DeviceEventEmitter.emit('globalOverlayHidden'); } catch (e) { /* ignore */ }
         onClose?.();
@@ -113,7 +112,7 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
     const [d, m, y] = dateStr.split('/').map(Number);
     const iso = new Date(y, m - 1, d).toISOString();
     const newId = `${Date.now()}-${Math.random().toString(36).slice(2,9)}`;
-    const payload = { id: newId, title: title.trim(), body: body.trim() || undefined, date: iso };
+  const payload = { id: newId, title: title.trim(), date: iso };
     
     try {
       if (onSave) {
@@ -123,13 +122,10 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
       }
     } catch (e) { /* ignore */ }
     
-    try { 
-      DeviceEventEmitter.emit('globalOverlayShow', { name: 'edit-entry', props: { id: newId } }); 
-    } catch (e) { /* ignore */ }
-    
-    try { 
-      DeviceEventEmitter.emit('globalOverlayHideRequest'); 
-    } catch (e) { /* ignore */ }
+    try {
+      // navigate to the ent-editor page under (tabs) and pass the new id
+      router.push(`/(tabs)/ent-editor?id=${encodeURIComponent(newId)}`);
+    } catch (e) { /* ignore navigation errors */ }
   };
 
   const onChangeDateStr = (text: string) => {
@@ -191,10 +187,8 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
             <View style={styles.iconCircle}>
               <Ionicons name="book-outline" size={24} color="#4DCDC1" />
             </View>
-            <Text style={[styles.title, { color: '#4DCDC1' }]}>New Journal Entry</Text>
-            <Text style={[styles.subtitle, { color: isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.5)' }]}>
-              Capture your thoughts and memories
-            </Text>
+            <Text style={[styles.title, { color: '#4DCDC1' }]}>{t('entry.new')}</Text>
+            
           </View>
 
           <View style={styles.formSection}>
@@ -202,11 +196,11 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
               <Ionicons 
                 name="text-outline" 
                 size={18} 
-                color={isDark ? 'rgba(77,204,193,0.6)' : 'rgba(77,204,193,0.7)'} 
+                color={isDark ? '#4dccc1' : '#4dccc1'} 
                 style={styles.inputIcon}
               />
               <TextInput 
-                placeholder="Entry title" 
+                placeholder={t('entry.entry_title')} 
                 placeholderTextColor={placeholderColor} 
                 value={title} 
                 onChangeText={setTitle} 
@@ -214,7 +208,7 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
                   styles.input, 
                   { 
                     color: isDark ? '#E5E7EB' : '#0A1E1C', 
-                    borderColor: 'rgba(77,204,193,0.3)', 
+                    borderColor: '#4dccc1', 
                     backgroundColor: isDark ? 'rgba(77,204,193,0.05)' : 'rgba(77,204,193,0.05)', 
                     fontWeight: '600',
                     paddingLeft: 44
@@ -223,42 +217,17 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
               />
             </View>
 
-            <View style={styles.inputWrapper}>
-              <Ionicons 
-                name="create-outline" 
-                size={18} 
-                color={isDark ? 'rgba(77,204,193,0.6)' : 'rgba(77,204,193,0.7)'} 
-                style={[styles.inputIcon, { top: 16 }]}
-              />
-              <TextInput 
-                placeholder="What's on your mind? (optional)" 
-                placeholderTextColor={placeholderColor} 
-                value={body} 
-                onChangeText={setBody} 
-                multiline 
-                numberOfLines={3} 
-                style={[
-                  styles.textarea, 
-                  { 
-                    color: isDark ? '#E5E7EB' : '#0A1E1C', 
-                    borderColor: 'rgba(77,204,193,0.3)', 
-                    backgroundColor: isDark ? 'rgba(77,204,193,0.05)' : 'rgba(77,204,193,0.05)', 
-                    fontWeight: '500',
-                    paddingLeft: 44
-                  }
-                ]} 
-              />
-            </View>
+            
             
             <View style={[styles.inputWrapper, { position: 'relative' }]}>
               <Ionicons 
                 name="calendar-outline" 
                 size={18} 
-                color={isDark ? 'rgba(77,204,193,0.6)' : 'rgba(77,204,193,0.7)'} 
+                color={isDark ? '#4dccc1' : '#4dccc1'} 
                 style={styles.inputIcon}
               />
               <TextInput
-                placeholder="DD/MM/YYYY"
+                placeholder={t('entry.date_placeholder')}
                 placeholderTextColor={placeholderColor}
                 value={dateStr}
                 editable={false}
@@ -268,7 +237,7 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
                   styles.birthdateInput, 
                   { 
                     color: isDark ? '#E5E7EB' : '#0A1E1C', 
-                    borderColor: isDateInvalid ? '#DC2626' : 'rgba(77,204,193,0.3)', 
+                    borderColor: isDateInvalid ? '#DC2626' : '#4dccc1', 
                     backgroundColor: isDark ? 'rgba(77,204,193,0.05)' : 'rgba(77,204,193,0.05)', 
                     paddingRight: 80, 
                     paddingLeft: 44,
@@ -280,33 +249,33 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
 
               <View style={styles.arrowContainer}>
                 <TouchableOpacity
-                  onPress={() => changeDateBy(1)}
-                  style={[
-                    styles.arrowCircle, 
-                    { 
-                      backgroundColor: isDark ? 'rgba(77,204,193,0.15)' : 'rgba(77,204,193,0.2)',
-                      borderWidth: 1,
-                      borderColor: 'rgba(77,204,193,0.3)'
-                    }
-                  ]}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                >
-                  <Ionicons name="chevron-up" size={16} color="#4DCCC1" />
-                </TouchableOpacity>
-
-                <TouchableOpacity
                   onPress={() => changeDateBy(-1)}
                   style={[
                     styles.arrowCircle, 
                     { 
                       backgroundColor: isDark ? 'rgba(77,204,193,0.15)' : 'rgba(77,204,193,0.2)',
                       borderWidth: 1,
-                      borderColor: 'rgba(77,204,193,0.3)'
+                      borderColor: '#4dccc1'
                     }
                   ]}
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
                   <Ionicons name="chevron-down" size={16} color="#4DCCC1" />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => changeDateBy(1)}
+                  style={[
+                    styles.arrowCircle, 
+                    { 
+                      backgroundColor: isDark ? 'rgba(77,204,193,0.15)' : 'rgba(77,204,193,0.2)',
+                      borderWidth: 1,
+                      borderColor: '#4dccc1'
+                    }
+                  ]}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Ionicons name="chevron-up" size={16} color="#4DCCC1" />
                 </TouchableOpacity>
               </View>
             </View>
@@ -314,7 +283,7 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
             {isDateInvalid && (
               <View style={styles.errorContainer}>
                 <Ionicons name="alert-circle" size={16} color="#DC2626" />
-                <Text style={styles.errorText}>Invalid date format</Text>
+                <Text style={styles.errorText}>{t('entry.invalid_date')}</Text>
               </View>
             )}
           </View>
@@ -330,12 +299,12 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
                 styles.button,
                 {
                   borderWidth: 1.5,
-                  borderColor: 'rgba(77,204,193,0.4)',
-                  backgroundColor: 'transparent',
+                  borderColor: '#4dccc1',
+                  backgroundColor: isDark ? 'rgba(77,204,193,0.15)' : 'rgba(77,204,193,0.15)'
                 }
               ]}
             >
-              <Text style={[styles.btnText, { color: '#4DCCC1' }]}>Cancel</Text>
+              <Text style={[styles.btnText, { color: '#4DCCC1' }]}>{t('common.cancel').trim()}</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -352,14 +321,8 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
                 }
               ]}
             >
-              <Ionicons 
-                name="checkmark-circle" 
-                size={18} 
-                color={(!title.trim() || isDateInvalid) ? '#9CCFC8' : '#4DCCC1'} 
-                style={{ marginRight: 6 }}
-              />
-              <Text style={[styles.btnText, { color: (!title.trim() || isDateInvalid) ? '#9CCFC8' : '#4DCCC1' }]}>
-                Save Entry
+                <Text style={[styles.btnText, { color: (!title.trim() || isDateInvalid) ? '#9CCFC8' : '#4DCCC1' }]}> 
+                {t('entry.create')}
               </Text>
             </TouchableOpacity>
           </View>
@@ -397,7 +360,7 @@ const styles = StyleSheet.create({
     alignItems: 'stretch', 
     padding: 24, 
     borderWidth: 1.5,
-    shadowColor: '#000', 
+    shadowColor: '#000000', 
   shadowOffset: { width: 0, height: 0 }, 
   shadowOpacity: 0, 
   shadowRadius: 0, 
@@ -405,8 +368,8 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
   },
   headerSection: {
-    alignItems: 'center',
-    marginBottom: 24,
+  alignItems: 'center',
+  marginBottom: 12,
   },
   iconCircle: {
     width: 56,
@@ -414,16 +377,16 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     backgroundColor: 'rgba(77,204,193,0.15)',
     borderWidth: 2,
-    borderColor: 'rgba(77,204,193,0.3)',
+    borderColor: '#4DCDC1',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 12,
+  marginBottom: 8,
   },
   title: { 
     fontSize: 22, 
     fontWeight: '700', 
     textAlign: 'center', 
-    marginBottom: 6,
+  marginBottom: 4,
     letterSpacing: 0.3
   },
   subtitle: {
@@ -433,7 +396,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2
   },
   formSection: {
-    marginBottom: 20,
+    marginBottom: 12,
   },
   inputWrapper: {
     position: 'relative',

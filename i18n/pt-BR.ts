@@ -214,4 +214,19 @@ export default {
     intro_body: 'Escrever um diário é uma prática terapêutica simples que ajuda a processar emoções, reduzir o estresse e perceber padrões ao longo do tempo. Tente fazer um registro rápido. Mesmo algumas frases podem trazer clareza e calma.',
     write_button: 'Escrever'
   }
+  ,
+  entry: {
+    edit: 'Editar Registro',
+    title: 'Título',
+    enter_title: 'Insira o título...',
+    content: 'Conteúdo',
+    start_writing: 'Comece a escrever seu registro...',
+    save: 'Salvar'
+  ,
+  new: 'Novo Registro',
+    entry_title: 'Título do Registro',
+  date_placeholder: 'DD/MM/YYYY',
+  invalid_date: 'Formato de data inválido',
+  create: 'Criar registro'
+  }
 } as const;
