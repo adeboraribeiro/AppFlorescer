@@ -1,12 +1,22 @@
 import { Ionicons } from '@expo/vector-icons';
+// removed local raw .flo viewer and export functionality
 import { useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Animated, DeviceEventEmitter, Dimensions, Easing, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import ConfirmDeletionModal from '../../components/ConfirmDeletionModal';
 import EntCreator from '../../components/entcreator';
+import { useSafeUserData } from '../../components/SafeUserDataProvider';
 import { useTheme } from '../../contexts/ThemeContext';
-import entryStore, { Entry, EntryStore } from '../../lib/entries';
+// Minimal Entry type to avoid module resolution issues in the editor; keep in sync with types/entries.ts
+export type Entry = {
+  id: string;
+  title: string;
+  body: string;
+  date: string;
+  createdAt: string;
+  updatedAt: string;
+};
 
 export default function Journal() {
   const { t } = useTranslation();
@@ -31,13 +41,17 @@ export default function Journal() {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
   const [entryToDelete, setEntryToDelete] = useState<Entry | null>(null);
+  // raw viewer removed
+  // Raw .flo viewer and export removed
 
   // Load entries when the screen mounts or becomes active
+  const { listJournalEntries, sendDeleteJournalEntry } = useSafeUserData();
+
   useEffect(() => {
     const loadEntries = async () => {
       setLoading(true);
       try {
-        const list = await entryStore.listEntries();
+        const list = await listJournalEntries();
         setEntries(list);
       } catch (e) {
         console.warn('Failed to load entries:', e);
@@ -65,6 +79,10 @@ export default function Journal() {
   // enforce general text color on the journal screen
   const cardTitleColor = generalText;
   const cardBodyColor = generalText;
+  const formatDisplayDate = (isoString: string) => {
+    const date = new Date(isoString);
+    return `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}/${date.getFullYear()}`;
+  };
   // 1-state button: outline & text #4DCCC1, outline alpha 0.7
   const cardButtonBg = isDarkMode ? 'rgba(15, 118, 109, 0.50)' : 'rgba(15,118,109,0.50)';
   const cardButtonText = generalText;
@@ -122,6 +140,10 @@ export default function Journal() {
     } catch (e) { console.warn('failed to emit overlay show', e); }
   };
 
+  // raw viewer removed
+
+  // helper removed
+
   return (
     <Animated.View style={[styles.container, { transform: [{ translateX: slideAnim }], backgroundColor: pageBgFinal }]}>
       {/* decorative background blobs */}
@@ -145,28 +167,26 @@ export default function Journal() {
         ) : (
           // Show entries list if we have entries
           <View style={styles.listContainer}>
+              {/* top action row removed */}
             <FlatList
               data={entries}
               keyExtractor={item => item.id}
               contentContainerStyle={styles.listContent}
               renderItem={({ item }) => (
-                <View style={[styles.entryCard, { 
-                    backgroundColor: cardBg,
-                    borderColor: outlineAlpha
-                  }]}> 
+                <View style={[styles.entryCard, { backgroundColor: cardBg, borderColor: outlineAlpha }]}> 
                   <TouchableOpacity
                     style={styles.entryCardContent}
                     onPress={() => router.push(`/(tabs)/ent-editor?id=${item.id}`)}
                     activeOpacity={0.8}
                   >
-                    <Text style={[styles.entryTitle, { color: cardTitleColor }]} numberOfLines={1}>
+                    <Text style={[styles.entryTitle, { color: cardTitleColor }]} numberOfLines={1} ellipsizeMode="tail">
                       {item.title}
                     </Text>
-                    <Text style={[styles.entryDate, { color: cardBodyColor }]} numberOfLines={1}>
-                      {EntryStore.formatDisplayDate(item.date)}
+                    <Text style={[styles.entryDate, { color: cardBodyColor }]} numberOfLines={1} ellipsizeMode="tail">
+                      {formatDisplayDate(item.date)}
                     </Text>
                     {item.body && (
-                      <Text style={[styles.entryPreview, { color: cardBodyColor }]} numberOfLines={1}>
+                      <Text style={[styles.entryPreview, { color: cardBodyColor }]} numberOfLines={1} ellipsizeMode="tail">
                         {item.body.split('\n')[0]}
                       </Text>
                     )}
@@ -199,15 +219,16 @@ export default function Journal() {
         onClose={() => setEntryToDelete(null)}
         onConfirm={() => {
           if (entryToDelete) {
-            entryStore.deleteEntry(entryToDelete.id).then(() => {
-              setEntries(entries.filter(e => e.id !== entryToDelete.id));
-              setEntryToDelete(null);
-            });
+            // send-only delete; then optimistically remove from UI
+            sendDeleteJournalEntry(entryToDelete.id).catch((err) => console.warn('delete failed', err));
+            setEntries(entries.filter(e => e.id !== entryToDelete.id));
+            setEntryToDelete(null);
           }
         }}
-        title={t('journal.delete_confirm')}
-        message={t('journal.delete_entry_message')}
+  title={t('journal.delete_confirm')}
+  message={t('journal.delete_entry_message')}
       />
+  {/* raw modal removed */}
       
   {/* entcreator is shown via the global overlay host in the tabs layout */}
     </Animated.View>
@@ -253,17 +274,24 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     borderWidth: 1,
     overflow: 'hidden',
+    alignItems: 'center',
   },
   entryCardContent: {
     flex: 1,
-    padding: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  justifyContent: 'flex-start',
   },
   deleteButton: {
-    width: 50,
+    width: 40,
+    height: 40,
+    marginRight: 12,
+    marginLeft: 8,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    borderLeftWidth: 1,
-    backgroundColor: 'rgba(255,107,107,0.1)',
+    borderWidth: 1,
+    backgroundColor: 'transparent',
   },
   entryHeader: {
     flexDirection: 'row',
@@ -272,16 +300,22 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   entryTitle: {
-    flex: 1,
-    fontSize: 18,
-    fontWeight: '600',
-    marginRight: 12,
+  fontSize: 16,
+  fontWeight: '700',
+  marginBottom: 4,
+  lineHeight: 20,
   },
   entryDate: {
-    fontSize: 14,
+  fontSize: 13,
+  marginBottom: 4,
+  lineHeight: 18,
+  opacity: 0.9,
   },
   entryPreview: {
-    fontSize: 14,
-    lineHeight: 20,
+  fontSize: 14,
+  color: '#9CCFC8',
+  opacity: 0.9,
+  marginBottom: 2,
+  lineHeight: 18,
   },
 });

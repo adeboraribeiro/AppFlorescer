@@ -1,7 +1,8 @@
 import { Stack } from 'expo-router';
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import SafeUserDataProvider from '../components/SafeUserDataProvider';
 import SettingsModal from '../components/SettingsModal';
 import { AuthProvider } from '../contexts/AuthContext';
 import { NotificationProvider } from '../contexts/NotificationContext';
@@ -9,6 +10,7 @@ import { SettingsProvider } from '../contexts/SettingsContext';
 import { ThemeProvider, useTheme } from '../contexts/ThemeContext';
 import { UserProvider } from '../contexts/UserContext';
 import '../i18n';
+import { supabase } from '../lib/supabase';
 
 function NavigationContent() {
   const { theme } = useTheme();
@@ -76,6 +78,23 @@ const styles = StyleSheet.create({
 });
 
 export default function RootLayout() {
+  const [userId, setUserId] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (mounted) setUserId(session?.user?.id ?? undefined);
+      } catch (e) {
+        // don't treat session fetch as fatal; provider can remain without id
+        // eslint-disable-next-line no-console
+        console.warn('Failed to read local auth session for layout:', e);
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
+
   return (
     <SafeAreaProvider>
       <ErrorCatcher label="ThemeProvider">
@@ -88,10 +107,12 @@ export default function RootLayout() {
                   <ErrorCatcher label="UserProvider">
                     <UserProvider>
                       <ErrorCatcher label="SettingsProvider">
-                        <SettingsProvider>
-                          <NavigationContent />
-                          <SettingsModal />
-                        </SettingsProvider>
+                        <SafeUserDataProvider initialUserId={userId}>
+                          <SettingsProvider>
+                            <NavigationContent />
+                            <SettingsModal />
+                          </SettingsProvider>
+                        </SafeUserDataProvider>
                       </ErrorCatcher>
                     </UserProvider>
                   </ErrorCatcher>

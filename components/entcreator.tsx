@@ -5,7 +5,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Animated, DeviceEventEmitter, Dimensions, Keyboard, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useTheme } from '../contexts/ThemeContext';
-import entryStore from '../lib/entries';
+import { useSafeUserData } from './SafeUserDataProvider';
 
 type Props = {
   visible?: boolean;
@@ -43,20 +43,25 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
   const [title, setTitle] = useState('');
   
   // Generate default title when the creator opens
+  const { listJournalEntries } = useSafeUserData();
+
   useEffect(() => {
     if (visible) {
-      const generateDefaultTitle = async () => {
-        const entries = await entryStore.listEntries();
-        const nextNumber = entries.length + 1;
-        // Store the entry number for later use
+      // Compute the next sequential entry number using the actual stored entries when possible.
+      (async () => {
+        let nextNumber = Math.floor(Date.now() / 1000) % 100000; // fallback
+        try {
+          const list = await listJournalEntries();
+          if (Array.isArray(list)) nextNumber = list.length + 1;
+        } catch (e) {
+          // ignore and use fallback
+        }
         setEntryNumber(nextNumber);
-        // Get base word based on current language
         const baseWord = t('entry.new').toLowerCase().startsWith('new') ? 'Entry' : 'Registro';
-        setTitle(`${baseWord} ${nextNumber}`);
-      };
-      generateDefaultTitle();
+        setTitle(`${baseWord} ${nextNumber}`.slice(0, 64));
+      })();
     }
-  }, [visible, t]);
+  }, [visible, t, listJournalEntries]);
 
   // Keep track of the entry number
   const [entryNumber, setEntryNumber] = useState<number>(0);
@@ -216,7 +221,8 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
                 placeholder={t('entry.entry_title')} 
                 placeholderTextColor={placeholderColor} 
                 value={title} 
-                onChangeText={setTitle} 
+                onChangeText={(text) => setTitle(text.slice(0, 64))} 
+                maxLength={64}
                 style={[
                   styles.input, 
                   { 
