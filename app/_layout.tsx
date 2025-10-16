@@ -121,6 +121,9 @@ export default function RootLayout() {
                                 return !inSplash ? <KeyChecker /> : null;
                               })()}
                               <SettingsModal />
+                              {/* Warm session passkey & cache shortly after provider mounts */}
+                              {/* Import locally to avoid circular import issues at module top-level */}
+                              {(() => { const SessionWarmer = require('../components/SessionWarmer').default; return <SessionWarmer />; })()}
                             </SettingsProvider>
                         </SafeUserDataProvider>
                       </ErrorCatcher>

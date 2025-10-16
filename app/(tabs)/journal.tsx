@@ -40,7 +40,6 @@ export default function Journal() {
   const router = useRouter();
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
-  const entriesRef = useRef<Entry[]>([]);
   const [entryToDelete, setEntryToDelete] = useState<Entry | null>(null);
   // raw viewer removed
   // Raw .flo viewer and export removed
@@ -50,20 +49,21 @@ export default function Journal() {
   const { getCachedCategory } = useSafeUserData();
 
   useEffect(() => {
-    const loadEntries = async () => {
-      setLoading(true);
+    const loadEntries = async (background = false) => {
+      if (!background) setLoading(true);
       try {
         const list = await listJournalEntries();
+        // If background refresh finds a newer set, update the UI; otherwise do nothing
         setEntries(list);
-        entriesRef.current = list;
       } catch (e) {
-        console.warn('Failed to load entries:', e);
+        if (!background) console.warn('Failed to load entries:', e);
       } finally {
-        setLoading(false);
+        if (!background) setLoading(false);
       }
     };
-    // If we have a cached journal available synchronously, use it immediately
-    let usedCache = false;
+
+    // If we have a cached journal available synchronously, use it immediately and
+    // do NOT trigger any background decryption - the UI must rely on the cache.
     try {
       const cached = getCachedCategory('journal');
       if (cached && typeof cached === 'object') {
@@ -74,38 +74,37 @@ export default function Journal() {
           return { ...e, body: previewBody } as Entry;
         }).sort((a: Entry, b: Entry) => new Date(b.date).getTime() - new Date(a.date).getTime());
         setEntries(previews);
-        entriesRef.current = previews;
         setLoading(false);
-        usedCache = true;
+        // Intentionally do not call listJournalEntries or any decryption here.
+        return;
       }
     } catch (e) { /* ignore cache errors */ }
 
-    // If we didn't have a cache, load immediately; otherwise refresh in background to avoid blocking navigation
-    if (!usedCache) {
-      loadEntries();
-    } else {
-      const loadEntriesSilent = async () => {
-        try {
-          const list = await listJournalEntries();
-          // Only update if changed to avoid unnecessary re-renders
-          const prev = entriesRef.current || [];
-          const changed = JSON.stringify(prev) !== JSON.stringify(list);
-          if (changed) {
-            setEntries(list);
-            entriesRef.current = list;
-          }
-        } catch (e) {
-          // ignore background refresh errors
-        }
-      };
-      // schedule a background refresh slightly deferred to allow navigation/UI to settle
-      const timeout = setTimeout(() => { loadEntriesSilent(); }, 800);
-      // clear if unmounted
-      return () => { clearTimeout(timeout); };
-    }
+    // No cache available, perform a normal load from disk (may decrypt).
+    void loadEntries(false);
 
-    // Refresh entries when creating new ones
-    const refreshSub = DeviceEventEmitter.addListener('refreshEntries', loadEntries);
+    // Refresh entries when creating new ones. Use cache-first refresh to avoid blocking UI.
+    const refreshHandler = () => {
+      try {
+        const cached = getCachedCategory('journal');
+        if (cached && typeof cached === 'object') {
+          const previews = Object.values(cached).map((e: any) => {
+            const lines = (e.body || '').split('\n').slice(0, 3);
+            let previewBody = lines.join('\n');
+            if (previewBody.length > 300) previewBody = previewBody.slice(0, 300) + '…';
+            return { ...e, body: previewBody } as Entry;
+          }).sort((a: Entry, b: Entry) => new Date(b.date).getTime() - new Date(a.date).getTime());
+          // update UI synchronously
+          setEntries(previews);
+          // schedule a background refresh to reconcile with disk
+          void loadEntries(true);
+          return;
+        }
+      } catch (e) { /* ignore cache errors */ }
+      // fallback to full load if no cache
+      void loadEntries(false);
+    };
+    const refreshSub = DeviceEventEmitter.addListener('refreshEntries', refreshHandler);
     return () => refreshSub.remove();
   }, []);
   const pageBgLight = '#ffffffff';

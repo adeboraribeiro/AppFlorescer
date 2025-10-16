@@ -42,24 +42,20 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
 
   const [title, setTitle] = useState('');
   
-  // Generate default title when the creator opens
+  // Generate default title when the creator opens (cache-first to avoid heavy decryption)
   const { listJournalEntries, getCachedCategory } = useSafeUserData();
 
   useEffect(() => {
     if (visible) {
-      // Compute the next sequential entry number using cached entries synchronously when possible
+      // Compute the next sequential entry number using cached entries first (non-blocking).
       (async () => {
         let nextNumber = Math.floor(Date.now() / 1000) % 100000; // fallback
         try {
-          try {
-            const cached = getCachedCategory('journal');
-            if (cached && typeof cached === 'object') {
-              nextNumber = Object.keys(cached).length + 1;
-            }
-          } catch (e) { /* ignore cache usage errors */ }
-
-          // If cache did not provide a count, fall back to async listing
-          if (!nextNumber || nextNumber < 1) {
+          // Prefer quick synchronous cache lookup to avoid triggering decryption/KDF
+          const cached = getCachedCategory && getCachedCategory('journal');
+          if (cached && typeof cached === 'object') {
+            nextNumber = Object.keys(cached).length + 1;
+          } else {
             const list = await listJournalEntries();
             if (Array.isArray(list)) nextNumber = list.length + 1;
           }

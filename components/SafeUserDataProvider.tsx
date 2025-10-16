@@ -304,12 +304,23 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
   // Per-category in-memory cache (cleared when user or session changes)
   const categoryCacheRef = useRef<Record<string, any> | null>(null);
 
+  // In-flight read promises to dedupe concurrent decrypt/read requests per category
+  const inflightReadsRef = useRef<Record<string, Promise<any>>>({});
+
+  // Cache the last-read raw file and its parsed object to avoid re-parsing/decrypting whole-file repeatedly
+  const parsedFileRef = useRef<{ raw?: string | null; parsed?: FloData | null }>({ raw: undefined, parsed: null });
+
   function getCachedCategory(category: string) {
     try {
       return categoryCacheRef.current ? categoryCacheRef.current[category] : null;
     } catch (e) {
       return null;
     }
+  }
+
+  // Helper: deep-equal cheap check using JSON stringify (best-effort)
+  function _deepEqual(a: any, b: any) {
+    try { return JSON.stringify(a) === JSON.stringify(b); } catch (e) { return false; }
   }
 
   function setUser(uid?: string) {
@@ -332,55 +343,88 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
   async function readCategory(category: string, passkey?: string): Promise<any> {
     const uid = userId ?? providedUserId;
     if (!uid) throw new Error('No user set');
-    const raw = await loadRaw(uid);
-  if (!raw) return;
-    // Two possible storage modes exist:
-    // 1) legacy whole-file encrypted blob: raw starts with PREFIX -> decrypt whole file
-    // 2) new per-category encryption: raw is plaintext JSON but individual category
-    //    values may be encrypted strings starting with PREFIX. We handle both.
 
-    let parsed: FloData | null = null;
-    if (typeof raw === 'string' && raw.startsWith(PREFIX)) {
-      // Legacy whole-file encryption: need a passkey to decrypt entire payload
-      const rawPass = await resolveStoredOrProvidedPasskey(uid, passkey as string | undefined);
-      if (!rawPass) throw new Error('Passkey required to decrypt data');
-      const decrypted = decryptString(raw, uid, rawPass);
-      try { parsed = JSON.parse(decrypted) as FloData; } catch (e) { throw new Error('Failed to parse decrypted data'); }
-    } else {
-      // Plain JSON file; parse it and inspect the requested category only
-      try {
-        parsed = JSON.parse(String(raw)) as FloData;
-      } catch (e) {
-        // malformed JSON
-        throw new Error('Failed to parse stored data');
-      }
-    }
-
-  const value = parsed ? (parsed as any)[category] : undefined;
-    if (typeof value === 'string' && value.startsWith(PREFIX)) {
-      // Category-level encrypted string
-      const rawPass = await resolveStoredOrProvidedPasskey(uid, passkey as string | undefined);
-      if (!rawPass) throw new Error('Passkey required to decrypt data');
-      let decrypted = decryptString(value, uid, rawPass);
-      try {
-        const parsedOnce = JSON.parse(decrypted);
-        if (typeof parsedOnce === 'string') {
-          // double-encoded
-          return JSON.parse(parsedOnce);
-        }
-        return parsedOnce;
-      } catch (e) {
-        // not JSON, return raw decrypted string
-        return decrypted;
-      }
-    }
-
-    // cache category value for quick synchronous reads
+    // Return cached value if present
     try {
-      categoryCacheRef.current = categoryCacheRef.current ?? {};
-      categoryCacheRef.current[category] = value;
-    } catch (e) { /* ignore cache failures */ }
-    return value;
+      if (categoryCacheRef.current && Object.prototype.hasOwnProperty.call(categoryCacheRef.current, category)) {
+        return categoryCacheRef.current![category];
+      }
+    } catch (e) { /* ignore cache access errors */ }
+
+    // If a read for this category is already in-flight, reuse the promise
+    if (Object.prototype.hasOwnProperty.call(inflightReadsRef.current, category)) {
+      try { return await inflightReadsRef.current[category]; } catch (e) { throw e; }
+    }
+
+    // Create an inflight promise to dedupe concurrent reads
+    const p = (async () => {
+      const raw = await loadRaw(uid);
+      if (!raw) return undefined;
+
+      // Two possible storage modes exist:
+      // 1) legacy whole-file encrypted blob: raw starts with PREFIX -> decrypt whole file
+      // 2) new per-category encryption: raw is plaintext JSON but individual category
+      //    values may be encrypted strings starting with PREFIX. We handle both.
+
+      let parsed: FloData | null = null;
+
+      // If raw equals previously cached raw, reuse parsed object to avoid re-decrypt/parse
+      if (parsedFileRef.current && parsedFileRef.current.raw === raw && parsedFileRef.current.parsed) {
+        parsed = parsedFileRef.current.parsed as FloData;
+      } else {
+        if (typeof raw === 'string' && raw.startsWith(PREFIX)) {
+          // Legacy whole-file encryption: need a passkey to decrypt entire payload
+          const rawPass = await resolveStoredOrProvidedPasskey(uid, passkey as string | undefined);
+          if (!rawPass) throw new Error('Passkey required to decrypt data');
+          const decrypted = decryptString(raw, uid, rawPass);
+          try {
+            parsed = JSON.parse(decrypted) as FloData;
+          } catch (e) { throw new Error('Failed to parse decrypted data'); }
+        } else {
+          // Plain JSON file; parse it and inspect the requested category only
+          try {
+            parsed = JSON.parse(String(raw)) as FloData;
+          } catch (e) {
+            // malformed JSON
+            throw new Error('Failed to parse stored data');
+          }
+        }
+        // cache parsed file
+        try { parsedFileRef.current = { raw: raw, parsed }; } catch (e) { /* ignore */ }
+      }
+
+      // If the requested category is a string that is itself encrypted, decrypt it
+      const value = parsed ? (parsed as any)[category] : undefined;
+      if (typeof value === 'string' && value.startsWith(PREFIX)) {
+        const rawPass = await resolveStoredOrProvidedPasskey(uid, passkey as string | undefined);
+        if (!rawPass) throw new Error('Passkey required to decrypt data');
+        let decrypted = decryptString(value, uid, rawPass);
+        try {
+          const parsedOnce = JSON.parse(decrypted);
+          const out = typeof parsedOnce === 'string' ? JSON.parse(parsedOnce) : parsedOnce;
+          // cache decrypted category
+          try { categoryCacheRef.current = categoryCacheRef.current ?? {}; categoryCacheRef.current[category] = out; } catch (e) { /* ignore */ }
+          return out;
+        } catch (e) {
+          // not JSON, return raw decrypted string and cache
+          try { categoryCacheRef.current = categoryCacheRef.current ?? {}; categoryCacheRef.current[category] = decrypted; } catch (err) { /* ignore */ }
+          return decrypted;
+        }
+      }
+
+      // cache category value for quick synchronous reads
+      try { categoryCacheRef.current = categoryCacheRef.current ?? {}; categoryCacheRef.current[category] = value; } catch (e) { /* ignore cache failures */ }
+      return value;
+    })();
+
+    inflightReadsRef.current[category] = p;
+    try {
+      const res = await p;
+      return res;
+    } finally {
+      // ensure we clear inflight after completion
+      try { delete inflightReadsRef.current[category]; } catch (e) { /* ignore */ }
+    }
   }
 
   // Generic write category: decrypts, sets category, re-encrypts and saves. Locks immediately after.
@@ -401,7 +445,6 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
         try { data = JSON.parse(String(raw)) as FloData; } catch (e) { data = { user: uid, journal: {} }; }
       }
     }
-
     // Determine effective passkey for writing (if provided or stored)
     let effective: string | undefined = passkey as string | undefined;
     if (!effective) {
@@ -413,6 +456,15 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
       console.log('setkeylogiclater');
       throw new Error('Passkey required to save journal');
     }
+
+    // Avoid redundant writes: if cached value equals payload, skip
+    try {
+      const cached = categoryCacheRef.current ? categoryCacheRef.current[category] : undefined;
+      if (cached !== undefined && _deepEqual(cached, payload)) {
+        // nothing to do
+        return;
+      }
+    } catch (e) { /* ignore equality errors */ }
 
     // If we have an effective passkey, encrypt only the category payload and store as string
     if (effective) {
@@ -434,6 +486,8 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
     try {
       categoryCacheRef.current = categoryCacheRef.current ?? {};
       categoryCacheRef.current[category] = payload;
+      // update parsed file cache
+      try { parsedFileRef.current = { raw: finalStore, parsed: data }; } catch (e) { /* ignore */ }
     } catch (e) { /* ignore */ }
   }
 

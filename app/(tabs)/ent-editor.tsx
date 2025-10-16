@@ -3,6 +3,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, DeviceEventEmitter, KeyboardAvoidingView, Modal, Platform, ScrollView, Share, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { LoadingOverlay } from '../../components/LoadingOverlay';
 import { useSafeUserData } from '../../components/SafeUserDataProvider';
 import { useTheme } from '../../contexts/ThemeContext';
 
@@ -43,6 +44,35 @@ export default function EditEntryView() {
   const [viewerLoading, setViewerLoading] = useState(false);
   const [viewerText, setViewerText] = useState<string | null>(null);
   const [viewerSize, setViewerSize] = useState<number>(0);
+
+  // Loading overlay state (used for opening an entry or when saving)
+  const [showOverlay, setShowOverlay] = useState(false);
+  const [overlayText, setOverlayText] = useState<string | undefined>(undefined);
+  const overlayTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Track the last saved snapshot to avoid redundant autosaves
+  const lastSavedRef = React.useRef<{ title: string; body: string }>({ title: (cachedEntry?.title ?? initialTitle).trim(), body: (cachedEntry?.body ?? '').trim() });
+
+  const startOverlayWithDelay = (text?: string, delay = 150) => {
+    // don't stack timers
+    if (overlayTimer.current) return;
+    overlayTimer.current = setTimeout(() => {
+      setOverlayText(text);
+      setShowOverlay(true);
+      overlayTimer.current = null;
+    }, delay);
+  };
+
+  const stopOverlay = () => {
+    try {
+      if (overlayTimer.current) {
+        clearTimeout(overlayTimer.current as any);
+        overlayTimer.current = null;
+      }
+    } catch (e) { /* ignore */ }
+    setShowOverlay(false);
+    setOverlayText(undefined);
+  };
 
   const openEncryptionView = async () => {
     try {
@@ -268,32 +298,52 @@ export default function EditEntryView() {
     };
 
     try {
-      // Fire-and-forget: send-only relationship with provider. Never read responses.
+      // For user-initiated save + navigateBack, await provider so we can show overlay
+      if (navigateBack) startOverlayWithDelay(t('entry.saving', 'Saving...'));
+
       if (currentId) {
-        // update existing entry (don't await results)
-        sendUpdateJournalEntry(currentId, payload).catch((err) => console.warn('update failed', err));
+        // update existing entry
+        if (navigateBack) {
+          await sendUpdateJournalEntry(currentId, payload);
+        } else {
+          // autosave: fire-and-forget
+          sendUpdateJournalEntry(currentId, payload).catch((err) => console.warn('update failed', err));
+        }
       } else {
         // create with a client-generated id so subsequent autosaves/updates can reference it
         const clientId = generatedId ?? `${Date.now()}-${Math.random().toString(36).slice(2,9)}`;
         setGeneratedId(clientId);
         setCurrentId(clientId);
-        // send create request with provided id; don't await or consume response
-        sendCreateJournalEntry({ ...payload, id: clientId }).catch((err) => console.warn('create failed', err));
+        if (navigateBack) {
+          await sendCreateJournalEntry({ ...payload, id: clientId });
+        } else {
+          // autosave: fire-and-forget
+          sendCreateJournalEntry({ ...payload, id: clientId }).catch((err) => console.warn('create failed', err));
+        }
       }
 
       try { DeviceEventEmitter.emit('refreshEntries'); } catch (e) { /* ignore */ }
 
-      if (navigateBack) router.back();
+      if (navigateBack) {
+        stopOverlay();
+        router.back();
+      }
     } catch (e) {
       console.warn('Failed to send entry:', e);
     }
+  // update lastSaved snapshot to current content (optimistic)
+  try { lastSavedRef.current = { title: title.trim(), body: body.trim() }; } catch (e) {}
   };
 
   // Autosave: save 2s after last change to title/body
   const autosaveTimer = React.useRef<any>(null);
   useEffect(() => {
     // don't autosave empty drafts
-    if (!title.trim() && !body.trim()) return;
+    const ttrim = title.trim();
+    const btrim = body.trim();
+    // If nothing changed since last saved, skip scheduling autosave
+    if (ttrim === lastSavedRef.current.title && btrim === lastSavedRef.current.body) return;
+    if (!ttrim && !btrim) return;
     if (autosaveTimer.current) {
       clearTimeout(autosaveTimer.current);
     }
@@ -318,10 +368,9 @@ export default function EditEntryView() {
     // This keeps the editor send-only for saves but allows users to edit an existing entry's content.
     if (entryId) {
       // Try to load from in-memory cache synchronously to avoid flicker
-      let foundCached: any = undefined;
       try {
         const cached = getCachedCategory('journal');
-        foundCached = cached && typeof cached === 'object' ? (cached as any)[entryId] : undefined;
+        const foundCached = cached && typeof cached === 'object' ? (cached as any)[entryId] : undefined;
         if (foundCached) {
           if (mounted) {
             setTitle(foundCached.title ?? '');
@@ -330,44 +379,55 @@ export default function EditEntryView() {
           }
         }
       } catch (e) { /* ignore cache errors */ }
-
-      // Only attempt a possibly expensive decrypt/list if cache did not have the entry.
-      if (!foundCached) {
-        (async () => {
+  (async () => {
+        try {
+          // If cache miss, load may require decryption — show overlay only if work takes longer than delay
+          let usedCache = false;
           try {
-            // Try to read the full journal category (will decrypt when needed) so
-            // the editor can load the complete entry body. Fall back to previews
-            // if readCategory is not available or fails for any reason.
-            try {
-              const full = await readCategory('journal');
-              const foundFull = full && typeof full === 'object' ? (full as any)[entryId] : undefined;
-              if (mounted && foundFull) {
-                setTitle(foundFull.title ?? '');
-                setBody(foundFull.body ?? '');
-                setCurrentId(entryId);
-                return;
-              }
-            } catch (innerErr) {
-              // Continue to fallback to list previews below
+            const cached = getCachedCategory('journal');
+            const foundCached = cached && typeof cached === 'object' ? (cached as any)[entryId] : undefined;
+            if (foundCached) {
+              usedCache = true;
             }
+          } catch (e) { /* ignore */ }
 
-            // Defer listJournalEntries slightly so UI can settle; it's still async and will not block navigation
-            const list = await listJournalEntries();
-            const found = Array.isArray(list) ? list.find(e => e.id === entryId) : undefined;
-            if (mounted && found) {
-              setTitle(found.title ?? '');
-              setBody(found.body ?? '');
+          if (!usedCache) startOverlayWithDelay(t('entry.loading_entry', 'Loading entry...'));
+
+          // Try to read the full journal category (will decrypt when needed)
+          try {
+            const full = await readCategory('journal');
+            const foundFull = full && typeof full === 'object' ? (full as any)[entryId] : undefined;
+            if (mounted && foundFull) {
+              setTitle(foundFull.title ?? '');
+                setBody(foundFull.body ?? '');
+                // mark loaded content as saved to avoid immediate autosave
+                try { lastSavedRef.current = { title: (foundFull.title ?? '').trim(), body: (foundFull.body ?? '').trim() }; } catch (e) {}
               setCurrentId(entryId);
-            } else if (mounted) {
-              // If not found, still set current id so subsequent saves update the correct id
-              setCurrentId(entryId);
+              stopOverlay();
+              return;
             }
-          } catch (e) {
-            // ignore errors and still set currentId so updates will use this id
-            if (mounted) setCurrentId(entryId);
+          } catch (innerErr) {
+            // Continue to fallback to list previews below
           }
-        })();
-      }
+
+          const list = await listJournalEntries();
+          const found = Array.isArray(list) ? list.find(e => e.id === entryId) : undefined;
+          if (mounted && found) {
+            setTitle(found.title ?? '');
+            setBody(found.body ?? '');
+            try { lastSavedRef.current = { title: (found.title ?? '').trim(), body: (found.body ?? '').trim() }; } catch (e) {}
+            setCurrentId(entryId);
+          } else if (mounted) {
+            // If not found, still set current id so subsequent saves update the correct id
+            setCurrentId(entryId);
+          }
+          stopOverlay();
+        } catch (e) {
+          // ignore errors and still set currentId so updates will use this id
+          if (mounted) setCurrentId(entryId);
+          stopOverlay();
+        }
+  })();
     }
     return () => { mounted = false; };
   }, [entryId, listJournalEntries]);
@@ -379,6 +439,9 @@ export default function EditEntryView() {
       style={[styles.container, { backgroundColor: isDark ? '#0A1E1C' : '#FFFFFF' }]}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
+      {showOverlay && (
+        <LoadingOverlay loadingText={overlayText} isDark={isDark} opacity={1} />
+      )}
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.iconTouch}>
