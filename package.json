@@ -29,6 +29,7 @@
     "expo-build-properties": "~0.14.8",
     "expo-cellular": "~7.1.5",
     "expo-constants": "~17.1.7",
+    "expo-crypto": "^15.0.7",
     "expo-device": "~7.1.4",
     "expo-font": "~13.3.2",
     "expo-haptics": "~14.1.4",
@@ -49,6 +50,7 @@
     "expo-web-browser": "~14.2.0",
     "groq": "^4.3.0",
     "i18next": "^25.3.2",
+    "libsodium-wrappers": "^0.7.15",
     "lodash": "^4.17.21",
     "lucide-react-native": "^0.536.0",
     "react": "19.0.0",
@@ -60,6 +62,7 @@
     "react-native-gesture-handler": "~2.24.0",
     "react-native-keyboard-aware-scroll-view": "^0.9.5",
     "react-native-modal-datetime-picker": "^18.0.0",
+    "react-native-quick-crypto": "^0.7.17",
     "react-native-reanimated": "~3.17.4",
     "react-native-safe-area-context": "^5.4.0",
     "react-native-screens": "~4.11.1",
@@ -71,7 +74,9 @@
     "zustand": "^5.0.6"
   },
   "devDependencies": {
+    "@react-native-community/cli": "^20.0.2",
     "@types/crypto-js": "^4.2.2",
+    "@types/libsodium-wrappers": "^0.7.14",
     "@types/react": "~19.0.10",
     "eslint": "^9.25.0",
     "eslint-config-expo": "~9.2.0",

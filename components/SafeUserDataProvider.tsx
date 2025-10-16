@@ -1,7 +1,7 @@
 import CryptoJS from 'crypto-js';
 import * as FileSystem from 'expo-file-system';
 import * as SecureStore from 'expo-secure-store';
-import React, { createContext, ReactNode, useContext, useState } from 'react';
+import React, { createContext, ReactNode, useContext, useEffect, useState } from 'react';
 
 // Minimal Entry type inlined to avoid module resolution issues during incremental edits.
 export type Entry = {
@@ -42,6 +42,7 @@ type SafeUserDataContextValue = {
   // Passkey management stored in SecureStore. Passkey is stored per-user until cleared.
   setPasskey: (passkey: string) => Promise<void>;
   getPasskey: () => Promise<string | null>;
+  getPasskeyExists: () => Promise<boolean>;
   clearPasskey: () => Promise<void>;
   // Delete the user's .flo file from disk
   deleteUserFlo: () => Promise<void>;
@@ -189,10 +190,17 @@ async function fileSet(path: string, value: string): Promise<void> {
 }
 
 export const SafeUserDataProvider = ({ children, initialUserId }: { children: ReactNode; initialUserId?: string }) => {
-  const [userId, setUserId] = useState<string | undefined>(undefined);
+  const [userId, setUserId] = useState<string | undefined>(initialUserId ?? undefined);
 
-  // initialUserId is provided by layout when available; provider remains offline
-  // and uses the provided id for file paths without any further wiring.
+  // Keep internal userId synced with the initialUserId prop passed from layout.
+  // This avoids a race where the provider mounts before layout's async session
+  // check completes and functions then see `No user set` despite the layout
+  // later providing the id.
+  useEffect(() => {
+    setUserId(initialUserId ?? undefined);
+  }, [initialUserId]);
+
+  // initialUserId may still be referenced in some places; keep a local alias for clarity
   const providedUserId = initialUserId ?? undefined;
 
   // Store files under the app's documents folder. No network or DB access performed here.
@@ -227,6 +235,18 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
     const key = passkeyStoreKey();
     if (!key) throw new Error('No user set');
     await SecureStore.deleteItemAsync(key);
+  }
+
+  // Returns true if a passkey exists in SecureStore for the current user
+  async function getPasskeyExists(): Promise<boolean> {
+    const key = passkeyStoreKey();
+    if (!key) throw new Error('No user set');
+    try {
+      const v = await SecureStore.getItemAsync(key);
+      return v !== null && v !== undefined;
+    } catch (e) {
+      return false;
+    }
   }
 
   async function resolveStoredOrProvidedPasskey(uid: string, provided?: string) {
@@ -636,6 +656,7 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
     sendDeleteJournalEntry: async (id, passkey) => deleteJournalEntry(id, passkey),
   setPasskey,
   getPasskey,
+  getPasskeyExists,
   clearPasskey,
   deleteUserFlo: async () => deleteRaw(),
   };

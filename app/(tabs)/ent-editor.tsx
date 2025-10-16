@@ -296,9 +296,10 @@ export default function EditEntryView() {
       clearTimeout(autosaveTimer.current);
     }
     autosaveTimer.current = setTimeout(() => {
-      handleSave(false);
+      // run autosave slightly deferred to allow UI to update before heavy crypto work
+      setTimeout(() => { handleSave(false); }, 50);
       autosaveTimer.current = null;
-    }, 2000);
+    }, 5000);
     return () => {
       if (autosaveTimer.current) {
         clearTimeout(autosaveTimer.current);

@@ -1,7 +1,8 @@
-import { Stack } from 'expo-router';
+import { Stack, useSegments } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import KeyChecker from '../components/KeyChecker';
 import SafeUserDataProvider from '../components/SafeUserDataProvider';
 import SettingsModal from '../components/SettingsModal';
 import { AuthProvider } from '../contexts/AuthContext';
@@ -79,6 +80,7 @@ const styles = StyleSheet.create({
 
 export default function RootLayout() {
   const [userId, setUserId] = useState<string | undefined>(undefined);
+  const segments = useSegments();
 
   useEffect(() => {
     let mounted = true;
@@ -109,9 +111,17 @@ export default function RootLayout() {
                       <ErrorCatcher label="SettingsProvider">
                         <SafeUserDataProvider initialUserId={userId}>
                           <SettingsProvider>
-                            <NavigationContent />
-                            <SettingsModal />
-                          </SettingsProvider>
+                              <NavigationContent />
+                              {/* Don't mount KeyChecker while the splash is showing inside (tabs).
+                                  If segments are not yet available, defer mounting until they are. */}
+                              {(() => {
+                                const segs: string[] = Array.isArray(segments) ? (segments as any as string[]) : [];
+                                if (!segs || segs.length === 0) return null; // wait for router to initialize
+                                const inSplash = segs.includes('index') || (segs.length === 1 && segs[0] === '(tabs)');
+                                return !inSplash ? <KeyChecker /> : null;
+                              })()}
+                              <SettingsModal />
+                            </SettingsProvider>
                         </SafeUserDataProvider>
                       </ErrorCatcher>
                     </UserProvider>
