@@ -14,16 +14,18 @@ export default function EditEntryView() {
   const params = useLocalSearchParams();
   const entryId = params.id as string | undefined;
   const [currentId, setCurrentId] = useState<string | undefined>(entryId);
-
   // Get title and number from URL params if available (from EntCreator)
   const initialTitle = typeof params.title === 'string' ? decodeURIComponent(params.title) : '';
   const entryNumber = typeof params.number === 'string' ? parseInt(params.number, 10) : 0;
-  const [title, setTitle] = useState(initialTitle);
-  const [body, setBody] = useState('');
+  // Read cached journal entry synchronously to avoid flicker on editor open
+  const { getCachedCategory, sendCreateJournalEntry, sendUpdateJournalEntry, fetchRawFlo, setPasskey, readCategory, writeCategory, clearPasskey, deleteUserFlo, listJournalEntries } = useSafeUserData();
+  const cachedJournal = getCachedCategory('journal');
+  const cachedEntry = entryId ? (cachedJournal && typeof cachedJournal === 'object' ? (cachedJournal as any)[entryId] : undefined) : undefined;
+  const [title, setTitle] = useState<string>(cachedEntry?.title ?? initialTitle);
+  const [body, setBody] = useState<string>(cachedEntry?.body ?? '');
   // local id for new entries so editor never needs to read from storage
   const [generatedId, setGeneratedId] = useState<string | undefined>(undefined);
-
-  const { sendCreateJournalEntry, sendUpdateJournalEntry, fetchRawFlo, setPasskey, readCategory, writeCategory, clearPasskey, deleteUserFlo, listJournalEntries } = useSafeUserData();
+ 
   const [showEncModal, setShowEncModal] = useState(false);
   const [encRaw, setEncRaw] = useState<string | null>(null);
   const [encIsEncrypted, setEncIsEncrypted] = useState<boolean>(false);
@@ -315,23 +317,57 @@ export default function EditEntryView() {
     // If an entry id was provided, load that single entry once to populate the editor fields.
     // This keeps the editor send-only for saves but allows users to edit an existing entry's content.
     if (entryId) {
-      (async () => {
-        try {
-          const list = await listJournalEntries();
-          const found = Array.isArray(list) ? list.find(e => e.id === entryId) : undefined;
-          if (mounted && found) {
-            setTitle(found.title ?? '');
-            setBody(found.body ?? '');
-            setCurrentId(entryId);
-          } else if (mounted) {
-            // If not found, still set current id so subsequent saves update the correct id
+      // Try to load from in-memory cache synchronously to avoid flicker
+      let foundCached: any = undefined;
+      try {
+        const cached = getCachedCategory('journal');
+        foundCached = cached && typeof cached === 'object' ? (cached as any)[entryId] : undefined;
+        if (foundCached) {
+          if (mounted) {
+            setTitle(foundCached.title ?? '');
+            setBody(foundCached.body ?? '');
             setCurrentId(entryId);
           }
-        } catch (e) {
-          // ignore errors and still set currentId so updates will use this id
-          if (mounted) setCurrentId(entryId);
         }
-      })();
+      } catch (e) { /* ignore cache errors */ }
+
+      // Only attempt a possibly expensive decrypt/list if cache did not have the entry.
+      if (!foundCached) {
+        (async () => {
+          try {
+            // Try to read the full journal category (will decrypt when needed) so
+            // the editor can load the complete entry body. Fall back to previews
+            // if readCategory is not available or fails for any reason.
+            try {
+              const full = await readCategory('journal');
+              const foundFull = full && typeof full === 'object' ? (full as any)[entryId] : undefined;
+              if (mounted && foundFull) {
+                setTitle(foundFull.title ?? '');
+                setBody(foundFull.body ?? '');
+                setCurrentId(entryId);
+                return;
+              }
+            } catch (innerErr) {
+              // Continue to fallback to list previews below
+            }
+
+            // Defer listJournalEntries slightly so UI can settle; it's still async and will not block navigation
+            const list = await listJournalEntries();
+            const found = Array.isArray(list) ? list.find(e => e.id === entryId) : undefined;
+            if (mounted && found) {
+              setTitle(found.title ?? '');
+              setBody(found.body ?? '');
+              setCurrentId(entryId);
+            } else if (mounted) {
+              // If not found, still set current id so subsequent saves update the correct id
+              setCurrentId(entryId);
+            }
+          } catch (e) {
+            // ignore errors and still set currentId so updates will use this id
+            if (mounted) setCurrentId(entryId);
+          }
+        })();
+      }
     }
     return () => { mounted = false; };
   }, [entryId, listJournalEntries]);

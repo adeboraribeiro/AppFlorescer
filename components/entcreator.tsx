@@ -43,16 +43,26 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
   const [title, setTitle] = useState('');
   
   // Generate default title when the creator opens
-  const { listJournalEntries } = useSafeUserData();
+  const { listJournalEntries, getCachedCategory } = useSafeUserData();
 
   useEffect(() => {
     if (visible) {
-      // Compute the next sequential entry number using the actual stored entries when possible.
+      // Compute the next sequential entry number using cached entries synchronously when possible
       (async () => {
         let nextNumber = Math.floor(Date.now() / 1000) % 100000; // fallback
         try {
-          const list = await listJournalEntries();
-          if (Array.isArray(list)) nextNumber = list.length + 1;
+          try {
+            const cached = getCachedCategory('journal');
+            if (cached && typeof cached === 'object') {
+              nextNumber = Object.keys(cached).length + 1;
+            }
+          } catch (e) { /* ignore cache usage errors */ }
+
+          // If cache did not provide a count, fall back to async listing
+          if (!nextNumber || nextNumber < 1) {
+            const list = await listJournalEntries();
+            if (Array.isArray(list)) nextNumber = list.length + 1;
+          }
         } catch (e) {
           // ignore and use fallback
         }

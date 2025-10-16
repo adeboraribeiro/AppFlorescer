@@ -40,12 +40,14 @@ export default function Journal() {
   const router = useRouter();
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
+  const entriesRef = useRef<Entry[]>([]);
   const [entryToDelete, setEntryToDelete] = useState<Entry | null>(null);
   // raw viewer removed
   // Raw .flo viewer and export removed
 
   // Load entries when the screen mounts or becomes active
   const { listJournalEntries, sendDeleteJournalEntry } = useSafeUserData();
+  const { getCachedCategory } = useSafeUserData();
 
   useEffect(() => {
     const loadEntries = async () => {
@@ -53,13 +55,54 @@ export default function Journal() {
       try {
         const list = await listJournalEntries();
         setEntries(list);
+        entriesRef.current = list;
       } catch (e) {
         console.warn('Failed to load entries:', e);
       } finally {
         setLoading(false);
       }
     };
-    loadEntries();
+    // If we have a cached journal available synchronously, use it immediately
+    let usedCache = false;
+    try {
+      const cached = getCachedCategory('journal');
+      if (cached && typeof cached === 'object') {
+        const previews = Object.values(cached).map((e: any) => {
+          const lines = (e.body || '').split('\n').slice(0, 3);
+          let previewBody = lines.join('\n');
+          if (previewBody.length > 300) previewBody = previewBody.slice(0, 300) + '…';
+          return { ...e, body: previewBody } as Entry;
+        }).sort((a: Entry, b: Entry) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        setEntries(previews);
+        entriesRef.current = previews;
+        setLoading(false);
+        usedCache = true;
+      }
+    } catch (e) { /* ignore cache errors */ }
+
+    // If we didn't have a cache, load immediately; otherwise refresh in background to avoid blocking navigation
+    if (!usedCache) {
+      loadEntries();
+    } else {
+      const loadEntriesSilent = async () => {
+        try {
+          const list = await listJournalEntries();
+          // Only update if changed to avoid unnecessary re-renders
+          const prev = entriesRef.current || [];
+          const changed = JSON.stringify(prev) !== JSON.stringify(list);
+          if (changed) {
+            setEntries(list);
+            entriesRef.current = list;
+          }
+        } catch (e) {
+          // ignore background refresh errors
+        }
+      };
+      // schedule a background refresh slightly deferred to allow navigation/UI to settle
+      const timeout = setTimeout(() => { loadEntriesSilent(); }, 800);
+      // clear if unmounted
+      return () => { clearTimeout(timeout); };
+    }
 
     // Refresh entries when creating new ones
     const refreshSub = DeviceEventEmitter.addListener('refreshEntries', loadEntries);

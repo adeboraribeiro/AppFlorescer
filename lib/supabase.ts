@@ -25,6 +25,23 @@ export let supabase: SupabaseClient = createClient(supabaseUrl!, supabaseAnonKey
 let _lastReconnectAt = 0
 const MIN_RECONNECT_INTERVAL_MS = 30_000 // 30s
 
+// Simple rate-limited logger to avoid duplicate identical messages flooding the console
+const _lastLogAt: Record<string, number> = {};
+const MIN_LOG_INTERVAL_MS = 10_000; // 10s
+function rateLimitedLog(key: string, ...args: any[]) {
+  try {
+    const now = Date.now();
+    const last = _lastLogAt[key] ?? 0;
+    if (now - last < MIN_LOG_INTERVAL_MS) return;
+    _lastLogAt[key] = now;
+    // Use console.log to preserve existing behavior
+    // eslint-disable-next-line no-console
+    console.log(...args);
+  } catch (e) {
+    // ignore logging errors
+  }
+}
+
 export function reconnectSupabase() {
   const now = Date.now()
   if (now - _lastReconnectAt < MIN_RECONNECT_INTERVAL_MS) {
@@ -55,7 +72,7 @@ export async function testSupabaseConnection() {
       const { data: { session } } = await supabase.auth.getSession();
       // If we have a session object the client/auth subsystem is healthy.
       if (session) {
-        console.log('Supabase auth session present')
+        rateLimitedLog('supabase:auth_session_present', 'Supabase auth session present')
         return true
       }
     } catch (e) {
@@ -78,7 +95,7 @@ export async function testSupabaseConnection() {
       // or auth errors as "reachable" so reconnect logic doesn't spam when
       // the SDK hasn't established a session yet.
       if (res) {
-        console.log('Supabase REST endpoint reachable (status:', res.status, ')')
+        rateLimitedLog('supabase:rest_probe', 'Supabase REST endpoint reachable (status:', res.status, ')')
         return true
       }
     } catch (fetchErr) {

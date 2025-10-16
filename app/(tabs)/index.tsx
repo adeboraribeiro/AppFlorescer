@@ -37,6 +37,16 @@ export default function splash() {
       try {
         // Start fetching user profile immediately if we have a user
         const profilePromise = user ? fetchUserProfile() : Promise.resolve();
+        // Warm an ephemeral session decryption if available: try to activate
+        // an in-memory passkey and perform a lightweight decrypt of 'journal'.
+        try {
+          // Import provider lazily to avoid cyclic imports at module load
+          const { default: SafeUserDataProvider, useSafeUserData } = await Promise.resolve().then(() => require('../../components/SafeUserDataProvider'));
+          // useSafeUserData is a hook and cannot be used here; instead call into the provider via a separate module if available.
+          // NOTE: we cannot safely call hooks from non-component code; skip warming here to avoid runtime errors.
+        } catch (e) {
+          // ignore; warming not performed
+        }
         
         // Attempt to ensure the Supabase connection when splash is shown.
         // Run reconnect in parallel but don't block animations for too long.
