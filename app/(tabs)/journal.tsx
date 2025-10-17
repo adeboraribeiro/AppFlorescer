@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { Animated, DeviceEventEmitter, Dimensions, Easing, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import ConfirmDeletionModal from '../../components/ConfirmDeletionModal';
 import EntCreator from '../../components/entcreator';
+import { LoadingOverlay } from '../../components/LoadingOverlay';
 import { useSafeUserData } from '../../components/SafeUserDataProvider';
 import { useTheme } from '../../contexts/ThemeContext';
 // Minimal Entry type to avoid module resolution issues in the editor; keep in sync with types/entries.ts
@@ -41,6 +42,25 @@ export default function Journal() {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
   const [entryToDelete, setEntryToDelete] = useState<Entry | null>(null);
+  // Deletion overlay state
+  const [showOverlay, setShowOverlay] = useState(false);
+  const [overlayText, setOverlayText] = useState<string | undefined>(undefined);
+  const overlayTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const startOverlayWithDelay = (text?: string, delay = 150) => {
+    if (overlayTimerRef.current) return;
+    overlayTimerRef.current = setTimeout(() => {
+      setOverlayText(text);
+      setShowOverlay(true);
+      overlayTimerRef.current = null;
+    }, delay);
+  };
+
+  const stopOverlay = () => {
+    try { if (overlayTimerRef.current) { clearTimeout(overlayTimerRef.current as any); overlayTimerRef.current = null; } } catch (e) {}
+    setShowOverlay(false);
+    setOverlayText(undefined);
+  };
   // raw viewer removed
   // Raw .flo viewer and export removed
 
@@ -67,12 +87,12 @@ export default function Journal() {
     try {
       const cached = getCachedCategory('journal');
       if (cached && typeof cached === 'object') {
-        const previews = Object.values(cached).map((e: any) => {
+  const previews = Object.values(cached).map((e: any) => {
           const lines = (e.body || '').split('\n').slice(0, 3);
           let previewBody = lines.join('\n');
           if (previewBody.length > 300) previewBody = previewBody.slice(0, 300) + '…';
           return { ...e, body: previewBody } as Entry;
-        }).sort((a: Entry, b: Entry) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }).sort((a: Entry, b: Entry) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
         setEntries(previews);
         setLoading(false);
         // Intentionally do not call listJournalEntries or any decryption here.
@@ -93,7 +113,7 @@ export default function Journal() {
             let previewBody = lines.join('\n');
             if (previewBody.length > 300) previewBody = previewBody.slice(0, 300) + '…';
             return { ...e, body: previewBody } as Entry;
-          }).sort((a: Entry, b: Entry) => new Date(b.date).getTime() - new Date(a.date).getTime());
+          }).sort((a: Entry, b: Entry) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
           // update UI synchronously
           setEntries(previews);
           // schedule a background refresh to reconcile with disk
@@ -182,6 +202,53 @@ export default function Journal() {
     } catch (e) { console.warn('failed to emit overlay show', e); }
   };
 
+  // Await delete with overlay to avoid races with decryption and UI updates
+  const handleConfirmDelete = async () => {
+    if (!entryToDelete) return;
+    const id = entryToDelete.id;
+    // close modal immediately
+    setEntryToDelete(null);
+
+    // show overlay immediately so it can render before heavy crypto work
+    try {
+      if (overlayTimerRef.current) { clearTimeout(overlayTimerRef.current as any); overlayTimerRef.current = null; }
+    } catch (e) {}
+    setOverlayText('Deleting entry...');
+    setShowOverlay(true);
+
+    // Start actual delete in a short timeout to yield to the renderer so overlay becomes visible
+    setTimeout(async () => {
+      try {
+        await sendDeleteJournalEntry?.(id);
+        // refresh entries: prefer cache-first to avoid unnecessary decrypt
+        try {
+          const cached = getCachedCategory('journal');
+          if (cached && typeof cached === 'object') {
+            const previews = Object.values(cached).map((e: any) => {
+              const lines = (e.body || '').split('\n').slice(0, 3);
+              let previewBody = lines.join('\n');
+              if (previewBody.length > 300) previewBody = previewBody.slice(0, 300) + '…';
+              return { ...e, body: previewBody } as Entry;
+            }).sort((a: Entry, b: Entry) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+            setEntries(previews);
+            return;
+          }
+        } catch (e) { /* ignore cache errors */ }
+        // fallback to listing (may decrypt)
+        try {
+          const list = await listJournalEntries();
+          setEntries(list);
+        } catch (e) { /* ignore */ }
+      } catch (err) {
+        console.warn('delete failed', err);
+        try { const list = await listJournalEntries(); setEntries(list); } catch (e) { /* ignore */ }
+      } finally {
+        // small delay so spinner is visible for at least a tick
+        try { setTimeout(() => stopOverlay(), 80); } catch (e) { stopOverlay(); }
+      }
+    }, 60);
+  };
+
   // raw viewer removed
 
   // helper removed
@@ -256,20 +323,14 @@ export default function Journal() {
         <View style={styles.bottomBlock} />
       </View>
       
-      <ConfirmDeletionModal
-        isVisible={!!entryToDelete}
-        onClose={() => setEntryToDelete(null)}
-        onConfirm={() => {
-          if (entryToDelete) {
-            // send-only delete; then optimistically remove from UI
-            sendDeleteJournalEntry(entryToDelete.id).catch((err) => console.warn('delete failed', err));
-            setEntries(entries.filter(e => e.id !== entryToDelete.id));
-            setEntryToDelete(null);
-          }
-        }}
+  <ConfirmDeletionModal
+    isVisible={!!entryToDelete}
+    onClose={() => setEntryToDelete(null)}
+    onConfirm={() => { void handleConfirmDelete(); }}
   title={t('journal.delete_confirm')}
   message={t('journal.delete_entry_message')}
-      />
+  />
+  {showOverlay && <LoadingOverlay loadingText={overlayText} isDark={isDarkMode} />}
   {/* raw modal removed */}
       
   {/* entcreator is shown via the global overlay host in the tabs layout */}

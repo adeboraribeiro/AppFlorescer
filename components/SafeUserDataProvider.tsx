@@ -22,7 +22,9 @@ type JournalMap = { [id: string]: Entry };
 type FloData = {
   // user id MUST NOT be stored in plaintext in the persisted file; keep optional
   user?: string;
-  journal?: JournalMap;
+  journal?: {
+    [chunkKey: string]: string; // e.g. "chunk_1(5/15)": "BROM_encrypted..."
+  };
   // additional categories may be added
 };
 
@@ -37,6 +39,7 @@ type SafeUserDataContextValue = {
   fetchRawFlo: (passkey?: string) => Promise<{ raw: string | null; isEncrypted: boolean; decrypted?: string; path: string; base64Decoded?: string; info?: { exists: boolean; size?: number; modificationTime?: number; readError?: string } }>;
   // Journal helpers (SEND-ONLY for editor) — these methods persist data but do NOT return the stored content.
   listJournalEntries: (passkey?: string) => Promise<Entry[]>;
+  readAllJournalChunks: (passkey?: string) => Promise<{ [chunkName: string]: JournalMap }>;
   listFloFiles: () => Promise<string[]>;
   sendCreateJournalEntry: (input: Omit<Entry, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }, passkey?: string) => Promise<void>;
   sendUpdateJournalEntry: (id: string, patch: Partial<Entry>, passkey?: string) => Promise<void>;
@@ -45,6 +48,9 @@ type SafeUserDataContextValue = {
   setPasskey: (passkey: string) => Promise<void>;
   getPasskey: () => Promise<string | null>;
   getPasskeyExists: () => Promise<boolean>;
+  // Encrypted user profile stored inside the .flo under the `userinfo` key
+  getUserProfile: (passkey?: string) => Promise<any | null>;
+  saveUserProfile: (profile: any, passkey?: string) => Promise<void>;
   // Activate an in-memory session passkey (kept only while app is foregrounded)
   activateSessionPasskey: (passkey: string) => void;
   clearSessionPasskey: () => void;
@@ -53,6 +59,8 @@ type SafeUserDataContextValue = {
   clearPasskey: () => Promise<void>;
   // Delete the user's .flo file from disk
   deleteUserFlo: () => Promise<void>;
+  warmLatestJournalEntries?: (count: number) => Promise<void>;
+  removeEmptyJournalChunks?: (passkey?: string) => Promise<void>;
 };
 
 const SafeUserDataContext = createContext<SafeUserDataContextValue | undefined>(undefined);
@@ -247,8 +255,6 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
     sessionPasskeyRef.current = null;
   }
 
-  // (Previously had a helper to combine passkey+uid; now combine inside encrypt/decrypt functions.)
-
   async function clearPasskey() {
     const key = passkeyStoreKey();
     if (!key) throw new Error('No user set');
@@ -269,8 +275,9 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
 
   async function resolveStoredOrProvidedPasskey(uid: string, provided?: string) {
     if (provided) return provided;
-    // prefer in-memory session passkey if present
-    if (sessionPasskeyRef.current) return sessionPasskeyRef.current;
+    // Do NOT use any in-memory cached session passkey here. Always read the
+    // stored passkey from SecureStore so we do not cache sensitive secrets in
+    // memory. This function returns the stored passkey or null.
     try {
       const stored = await getPasskey();
       return stored ?? null;
@@ -312,6 +319,13 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
 
   function getCachedCategory(category: string) {
     try {
+      // If asking for 'journal', return the aggregated cache
+      if (category === 'journal') {
+        const cache = categoryCacheRef.current ?? {};
+        const agg = cache['journal'];
+        if (agg && typeof agg === 'object' && Object.keys(agg).length > 0) return agg;
+        return null;
+      }
       return categoryCacheRef.current ? categoryCacheRef.current[category] : null;
     } catch (e) {
       return null;
@@ -339,6 +353,21 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
     await fileSet(path!, raw);
   }
 
+  // --- Chunking helpers for journal storage ---
+  const JOURNAL_CHUNK_SIZE = 15;
+
+  // Parse chunk key like "chunk_1(5/15)" to extract index and count
+  function parseChunkKey(key: string): { index: number; count: number } | null {
+    const m = key.match(/^chunk_(\d+)\((\d+)\/\d+\)$/);
+    if (!m) return null;
+    return { index: parseInt(m[1], 10), count: parseInt(m[2], 10) };
+  }
+
+  // Generate chunk key with embedded count: "chunk_1(5/15)"
+  function makeChunkKey(index: number, count: number): string {
+    return `chunk_${index}(${count}/${JOURNAL_CHUNK_SIZE})`;
+  }
+
   // Generic read category: loads secure store, decrypts if encrypted (requires passkey), returns the category object
   async function readCategory(category: string, passkey?: string): Promise<any> {
     const uid = userId ?? providedUserId;
@@ -361,11 +390,6 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
       const raw = await loadRaw(uid);
       if (!raw) return undefined;
 
-      // Two possible storage modes exist:
-      // 1) legacy whole-file encrypted blob: raw starts with PREFIX -> decrypt whole file
-      // 2) new per-category encryption: raw is plaintext JSON but individual category
-      //    values may be encrypted strings starting with PREFIX. We handle both.
-
       let parsed: FloData | null = null;
 
       // If raw equals previously cached raw, reuse parsed object to avoid re-decrypt/parse
@@ -381,11 +405,10 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
             parsed = JSON.parse(decrypted) as FloData;
           } catch (e) { throw new Error('Failed to parse decrypted data'); }
         } else {
-          // Plain JSON file; parse it and inspect the requested category only
+          // Plain JSON file; parse it
           try {
             parsed = JSON.parse(String(raw)) as FloData;
           } catch (e) {
-            // malformed JSON
             throw new Error('Failed to parse stored data');
           }
         }
@@ -393,8 +416,36 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
         try { parsedFileRef.current = { raw: raw, parsed }; } catch (e) { /* ignore */ }
       }
 
-      // If the requested category is a string that is itself encrypted, decrypt it
-      const value = parsed ? (parsed as any)[category] : undefined;
+      // Special handling for 'journal' category - aggregate all chunks
+      if (category === 'journal' && parsed && parsed['journal']) {
+        const journalChunks = parsed['journal'];
+        const aggregated: JournalMap = {};
+        
+        for (const chunkKey of Object.keys(journalChunks)) {
+          const encryptedPayload = journalChunks[chunkKey];
+          if (typeof encryptedPayload === 'string' && encryptedPayload.startsWith(PREFIX)) {
+            const rawPass = await resolveStoredOrProvidedPasskey(uid, passkey as string | undefined);
+            if (!rawPass) throw new Error('Passkey required to decrypt data');
+            const decrypted = decryptString(encryptedPayload, uid, rawPass);
+            try {
+              const chunkMap = JSON.parse(decrypted) as JournalMap;
+              for (const id of Object.keys(chunkMap)) {
+                aggregated[id] = chunkMap[id];
+              }
+            } catch (e) { /* skip malformed chunk */ }
+          }
+        }
+        
+        try { 
+          categoryCacheRef.current = categoryCacheRef.current ?? {}; 
+          categoryCacheRef.current[category] = aggregated; 
+        } catch (e) { /* ignore */ }
+        return aggregated;
+      }
+
+      // For other categories, return as-is
+      let value: any = parsed ? (parsed as any)[category] : undefined;
+      
       if (typeof value === 'string' && value.startsWith(PREFIX)) {
         const rawPass = await resolveStoredOrProvidedPasskey(uid, passkey as string | undefined);
         if (!rawPass) throw new Error('Passkey required to decrypt data');
@@ -402,17 +453,14 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
         try {
           const parsedOnce = JSON.parse(decrypted);
           const out = typeof parsedOnce === 'string' ? JSON.parse(parsedOnce) : parsedOnce;
-          // cache decrypted category
           try { categoryCacheRef.current = categoryCacheRef.current ?? {}; categoryCacheRef.current[category] = out; } catch (e) { /* ignore */ }
           return out;
         } catch (e) {
-          // not JSON, return raw decrypted string and cache
           try { categoryCacheRef.current = categoryCacheRef.current ?? {}; categoryCacheRef.current[category] = decrypted; } catch (err) { /* ignore */ }
           return decrypted;
         }
       }
 
-      // cache category value for quick synchronous reads
       try { categoryCacheRef.current = categoryCacheRef.current ?? {}; categoryCacheRef.current[category] = value; } catch (e) { /* ignore cache failures */ }
       return value;
     })();
@@ -422,90 +470,244 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
       const res = await p;
       return res;
     } finally {
-      // ensure we clear inflight after completion
       try { delete inflightReadsRef.current[category]; } catch (e) { /* ignore */ }
     }
   }
 
-  // Generic write category: decrypts, sets category, re-encrypts and saves. Locks immediately after.
+  // Read all journal chunks and return a map of maps
+  async function readAllJournalChunks(passkey?: string): Promise<{ [chunkName: string]: JournalMap }> {
+    const uid = userId ?? providedUserId;
+    if (!uid) throw new Error('No user set');
+    
+    const raw = await loadRaw(uid);
+    if (!raw) return {};
+    
+    let parsed: FloData | null = null;
+    
+    if (typeof raw === 'string' && raw.startsWith(PREFIX)) {
+      const rawPass = await resolveStoredOrProvidedPasskey(uid, passkey as string | undefined);
+      if (!rawPass) throw new Error('Passkey required to decrypt data');
+      const decrypted = decryptString(raw, uid, rawPass);
+      try {
+        parsed = JSON.parse(decrypted) as FloData;
+      } catch (e) { return {}; }
+    } else {
+      try {
+        parsed = JSON.parse(String(raw)) as FloData;
+      } catch (e) { return {}; }
+    }
+    
+    if (!parsed || !parsed['journal']) return {};
+    
+    const out: { [chunkName: string]: JournalMap } = {};
+    const journalChunks = parsed['journal'];
+    
+    for (const chunkKey of Object.keys(journalChunks)) {
+      const encryptedPayload = journalChunks[chunkKey];
+      if (typeof encryptedPayload === 'string' && encryptedPayload.startsWith(PREFIX)) {
+        const rawPass = await resolveStoredOrProvidedPasskey(uid, passkey as string | undefined);
+        if (!rawPass) throw new Error('Passkey required to decrypt data');
+        try {
+          const decrypted = decryptString(encryptedPayload, uid, rawPass);
+          const chunkMap = JSON.parse(decrypted) as JournalMap;
+          out[chunkKey] = chunkMap;
+        } catch (e) { out[chunkKey] = {}; }
+      } else {
+        out[chunkKey] = {};
+      }
+    }
+    
+    return out;
+  }
+
+  // Warm the latest `count` journal entries into the in-memory cache
+  async function warmLatestJournalEntries(count: number) {
+    const uid = userId ?? providedUserId;
+    if (!uid) return;
+    
+    try {
+      const effectivePass = await resolveStoredOrProvidedPasskey(uid);
+      const allChunks = await readAllJournalChunks(effectivePass ?? undefined);
+      
+      let allEntries: Entry[] = [];
+      
+      // Sort chunk keys by index (descending) to read newest first
+      const chunkKeys = Object.keys(allChunks).sort((a, b) => {
+        const aInfo = parseChunkKey(a);
+        const bInfo = parseChunkKey(b);
+        if (!aInfo || !bInfo) return 0;
+        return bInfo.index - aInfo.index;
+      });
+      
+      for (const chunkKey of chunkKeys) {
+        const chunkMap = allChunks[chunkKey];
+        const entries = Object.values(chunkMap) as Entry[];
+        allEntries.push(...entries);
+        if (allEntries.length >= count) break;
+      }
+      
+      // Sort all collected entries newest->oldest and take top `count`
+      allEntries.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      const take = allEntries.slice(0, count);
+      const aggregated: JournalMap = {};
+      for (const e of take) aggregated[e.id] = e;
+      
+      try {
+        categoryCacheRef.current = categoryCacheRef.current ?? {};
+        categoryCacheRef.current['journal'] = aggregated;
+      } catch (e) { /* ignore */ }
+    } catch (e) {
+      return;
+    }
+  }
+
+  // Find the first chunk index that has room (< CHUNK_SIZE)
+  async function findChunkIndexWithRoom(passkey?: string): Promise<number> {
+    const uid = userId ?? providedUserId;
+    if (!uid) return 1;
+    
+    const allChunks = await readAllJournalChunks(passkey);
+    const chunkKeys = Object.keys(allChunks);
+    
+    if (chunkKeys.length === 0) return 1;
+    
+    // Parse all chunk indices
+    const indices = chunkKeys
+      .map(parseChunkKey)
+      .filter((info): info is { index: number; count: number } => info !== null)
+      .sort((a, b) => a.index - b.index);
+    
+    // Find first chunk with room
+    for (const info of indices) {
+      if (info.count < JOURNAL_CHUNK_SIZE) {
+        return info.index;
+      }
+    }
+    
+    // All chunks are full, return next index
+    const maxIdx = indices.length > 0 ? Math.max(...indices.map(i => i.index)) : 0;
+    return maxIdx + 1;
+  }
+
+  // Generic write category: saves the category with nested chunk structure for journal
   async function writeCategory(category: string, payload: any, passkey?: string): Promise<void> {
     const uid = userId ?? providedUserId;
     if (!uid) throw new Error('No user set');
+    
     // Load existing
     const raw = await loadRaw(uid);
-    let data: FloData = { user: uid, journal: {} };
+    let data: FloData = { journal: {} };
+    
     if (raw) {
       if (typeof raw === 'string' && raw.startsWith(PREFIX)) {
-        // Legacy whole-file encrypted: require passkey to read then migrate to per-category storage
         const effectiveForRead = passkey ?? (await (async () => { try { return await getPasskey(); } catch { return undefined; } })());
         if (!effectiveForRead) throw new Error('Passkey required to decrypt data');
         const decrypted = decryptString(raw, uid, effectiveForRead);
-        try { data = JSON.parse(decrypted) as FloData; } catch (e) { data = { user: uid, journal: {} }; }
+        try { data = JSON.parse(decrypted) as FloData; } catch (e) { data = { journal: {} }; }
       } else {
-        try { data = JSON.parse(String(raw)) as FloData; } catch (e) { data = { user: uid, journal: {} }; }
+        try { data = JSON.parse(String(raw)) as FloData; } catch (e) { data = { journal: {} }; }
       }
     }
-    // Determine effective passkey for writing (if provided or stored)
+    
+    // Ensure journal object exists
+    if (!data.journal) data.journal = {};
+    
+    // Determine effective passkey
     let effective: string | undefined = passkey as string | undefined;
     if (!effective) {
       try { const gp = await getPasskey(); if (gp) effective = gp; } catch (e) { /* ignore */ }
     }
 
-    // For journal category, require a passkey to avoid writing plaintext journal data
-    if (category === 'journal' && !effective) {
-      console.log('setkeylogiclater');
-      throw new Error('Passkey required to save journal');
-    }
-
-    // Avoid redundant writes: if cached value equals payload, skip
-    try {
-      const cached = categoryCacheRef.current ? categoryCacheRef.current[category] : undefined;
-      if (cached !== undefined && _deepEqual(cached, payload)) {
-        // nothing to do
-        return;
+    // For non-journal categories, write normally. For journal writes, use
+    // writeJournalChunk which handles chunking and encryption.
+    if (category !== 'journal') {
+      if (effective) {
+        const toEncrypt = JSON.stringify(payload);
+        const encryptedCategory = encryptString(toEncrypt, uid, effective);
+        (data as any)[category] = encryptedCategory;
+      } else {
+        (data as any)[category] = payload;
       }
-    } catch (e) { /* ignore equality errors */ }
-
-    // If we have an effective passkey, encrypt only the category payload and store as string
-    if (effective) {
-      const toEncrypt = JSON.stringify(payload);
-      const encryptedCategory = encryptString(toEncrypt, uid, effective);
-      (data as any)[category] = encryptedCategory;
     } else {
-      // store as plaintext value
-      (data as any)[category] = payload;
+      throw new Error('Use writeJournalChunk to write journal data');
     }
 
-    // Do not persist the user id in plaintext. Remove any user field before saving.
+    // Do not persist the user id in plaintext
     try { delete (data as any).user; } catch (e) { /* ignore */ }
 
-    // Save the JSON file (per-category encryption stored as strings inside)
     const finalStore = JSON.stringify(data);
     await saveRaw(finalStore, uid);
-    // update in-memory cache
-    try {
-      categoryCacheRef.current = categoryCacheRef.current ?? {};
-      categoryCacheRef.current[category] = payload;
-      // update parsed file cache
-      try { parsedFileRef.current = { raw: finalStore, parsed: data }; } catch (e) { /* ignore */ }
-    } catch (e) { /* ignore */ }
+
+    // Update caches
+    try { parsedFileRef.current = { raw: finalStore, parsed: data }; } catch (e) { /* ignore */ }
+    try { categoryCacheRef.current = categoryCacheRef.current ?? {}; categoryCacheRef.current[category] = payload; } catch (e) { /* ignore */ }
   }
 
-  // Journal helpers that decrypt/update/encrypt per operation
+  // Internal helper to write a specific journal chunk
+  async function writeJournalChunk(chunkIndex: number, chunkMap: JournalMap, passkey?: string): Promise<void> {
+    const uid = userId ?? providedUserId;
+    if (!uid) throw new Error('No user set');
+
+    // Load existing
+    const raw = await loadRaw(uid);
+    let data: FloData = { journal: {} };
+    if (raw) {
+      if (typeof raw === 'string' && raw.startsWith(PREFIX)) {
+        const effectiveForRead = passkey ?? (await (async () => { try { return await getPasskey(); } catch { return undefined; } })());
+        if (!effectiveForRead) throw new Error('Passkey required to decrypt data');
+        const decrypted = decryptString(raw, uid, effectiveForRead);
+        try { data = JSON.parse(decrypted) as FloData; } catch (e) { data = { journal: {} }; }
+      } else {
+        try { data = JSON.parse(String(raw)) as FloData; } catch (e) { data = { journal: {} }; }
+      }
+    }
+
+    if (!data.journal) data.journal = {};
+
+    // Determine effective passkey for writing
+    let effective: string | undefined = passkey as string | undefined;
+    if (!effective) {
+      try { const gp = await getPasskey(); if (gp) effective = gp; } catch (e) { /* ignore */ }
+    }
+    if (!effective) throw new Error('Passkey required to save journal');
+
+    const count = Object.keys(chunkMap).length;
+    const chunkKey = makeChunkKey(chunkIndex, count);
+    const toEncrypt = JSON.stringify(chunkMap);
+    const encrypted = encryptString(toEncrypt, uid, effective);
+
+    // remove any existing keys for this index
+    for (const k of Object.keys(data.journal)) {
+      const info = parseChunkKey(k);
+      if (info && info.index === chunkIndex) delete data.journal[k];
+    }
+
+    data.journal[chunkKey] = encrypted;
+
+    try { delete (data as any).user; } catch (e) { /* ignore */ }
+    const finalStore = JSON.stringify(data);
+    await saveRaw(finalStore, uid);
+
+    try { parsedFileRef.current = { raw: finalStore, parsed: data }; } catch (e) { /* ignore */ }
+    try { if (categoryCacheRef.current) delete categoryCacheRef.current['journal']; } catch (e) { /* ignore */ }
+  }
+
+  // Journal helpers
   async function listJournalEntries(passkey?: string): Promise<Entry[]> {
-    // Use readCategory which handles per-category decryption and legacy whole-file blobs
     try {
-      const journalObj = (await readCategory('journal', passkey)) ?? {};
-      const journal = typeof journalObj === 'object' ? journalObj as JournalMap : {};
-      const previews = Object.values(journal).map((e) => {
-        const lines = (e.body || '').split('\n').slice(0, 3);
-        let previewBody = lines.join('\n');
-        if (previewBody.length > 300) previewBody = previewBody.slice(0, 300) + '…';
-        return { ...e, body: previewBody } as Entry;
-      });
-      return previews.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      const allChunks = await readAllJournalChunks(passkey);
+      const combined: Entry[] = [];
+      for (const chunkName of Object.keys(allChunks)) {
+        const chunk = allChunks[chunkName] ?? {};
+        for (const e of Object.values(chunk)) {
+          const lines = (e.body || '').split('\n').slice(0, 3);
+          let previewBody = lines.join('\n');
+          if (previewBody.length > 300) previewBody = previewBody.slice(0, 300) + '…';
+          combined.push({ ...e, body: previewBody } as Entry);
+        }
+      }
+      return combined.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     } catch (e) {
-      // If decryption fails or no journal, return empty list
       return [];
     }
   }
@@ -513,68 +715,108 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
   async function createJournalEntry(input: Omit<Entry, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }, passkey?: string): Promise<void> {
     const uid = userId ?? providedUserId;
     if (!uid) throw new Error('No user set');
-
-    // Read current journal (handles decryption)
-    const journal = (await readCategory('journal', passkey)) ?? {};
-
+    
     const now = new Date().toISOString();
     const id = input.id ?? `${Date.now()}-${Math.random().toString(36).slice(2,9)}`;
+    
+    const MAX_ENTRY_CHARS = 15000;
+    const safeTitle = (input.title || '').slice(0, 1024);
+    const safeBody = (input.body || '').slice(0, MAX_ENTRY_CHARS);
     const entry: Entry = {
       id,
-      title: input.title,
-      body: input.body || '',
+      title: safeTitle,
+      body: safeBody,
       date: input.date,
       createdAt: now,
       updatedAt: now,
     };
 
-    const journalMap = typeof journal === 'object' ? journal as JournalMap : {};
-    journalMap[id] = entry;
-
-    // writeCategory will encrypt the journal category if passkey provided
-    await writeCategory('journal', journalMap, passkey);
-    return;
+    // Find a chunk with room
+    const chunkIdx = await findChunkIndexWithRoom(passkey);
+    
+    // Read that specific chunk
+    const allChunks = await readAllJournalChunks(passkey);
+    const existingChunkKey = Object.keys(allChunks).find(k => {
+      const info = parseChunkKey(k);
+      return info && info.index === chunkIdx;
+    });
+    
+    const target = existingChunkKey ? { ...allChunks[existingChunkKey] } : {};
+    target[id] = entry;
+    
+    await writeJournalChunk(chunkIdx, target, passkey);
   }
 
   async function updateJournalEntry(id: string, patch: Partial<Entry>, passkey?: string): Promise<void> {
-  const uid = userId ?? providedUserId;
-  if (!uid) throw new Error('No user set');
-
-  const journal = (await readCategory('journal', passkey)) ?? {};
-  const journalMap = typeof journal === 'object' ? journal as JournalMap : {};
-  if (!journalMap[id]) return;
-  const existing = journalMap[id];
-  const updated: Entry = { ...existing, ...patch, updatedAt: new Date().toISOString() };
-  journalMap[id] = updated;
-
-  await writeCategory('journal', journalMap, passkey);
-  return;
+    const uid = userId ?? providedUserId;
+    if (!uid) throw new Error('No user set');
+    
+    const allChunks = await readAllJournalChunks(passkey);
+    let foundChunkKey: string | null = null;
+    let foundChunkIndex: number | null = null;
+    
+    for (const ckey of Object.keys(allChunks)) {
+      const chunk = allChunks[ckey] ?? {};
+      if (chunk[id]) {
+        foundChunkKey = ckey;
+        const info = parseChunkKey(ckey);
+        if (info) foundChunkIndex = info.index;
+        break;
+      }
+    }
+    
+    if (!foundChunkKey || foundChunkIndex === null) return;
+    
+    const orig = allChunks[foundChunkKey] as JournalMap;
+    const journalMap = { ...orig } as JournalMap;
+    const existing = orig[id];
+    
+    const MAX_ENTRY_CHARS = 15000;
+    const safeTitle = patch.title !== undefined ? (patch.title || '').slice(0, 1024) : existing.title;
+    const safeBody = patch.body !== undefined ? (patch.body || '').slice(0, MAX_ENTRY_CHARS) : existing.body;
+    const updated: Entry = { ...existing, ...patch, title: safeTitle, body: safeBody, updatedAt: new Date().toISOString() };
+    
+    journalMap[id] = updated;
+    await writeJournalChunk(foundChunkIndex, journalMap, passkey);
   }
 
   async function deleteJournalEntry(id: string, passkey?: string): Promise<void> {
-  const uid = userId ?? providedUserId;
-  if (!uid) throw new Error('No user set');
-
-  const journal = (await readCategory('journal', passkey)) ?? {};
-  const journalMap = typeof journal === 'object' ? journal as JournalMap : {};
-  if (!journalMap[id]) return;
-  delete journalMap[id];
-
-  await writeCategory('journal', journalMap, passkey);
-  return;
+    const uid = userId ?? providedUserId;
+    if (!uid) throw new Error('No user set');
+    
+    const allChunks = await readAllJournalChunks(passkey);
+    let foundChunkKey: string | null = null;
+    let foundChunkIndex: number | null = null;
+    
+    for (const ckey of Object.keys(allChunks)) {
+      const chunk = allChunks[ckey] ?? {};
+      if (chunk[id]) {
+        foundChunkKey = ckey;
+        const info = parseChunkKey(ckey);
+        if (info) foundChunkIndex = info.index;
+        break;
+      }
+    }
+    
+    if (!foundChunkKey || foundChunkIndex === null) return;
+    
+    const orig = allChunks[foundChunkKey] as JournalMap;
+    const journalMap = { ...orig } as JournalMap;
+    delete journalMap[id];
+    
+    await writeJournalChunk(foundChunkIndex, journalMap, passkey);
   }
 
-  // Return the raw file contents and whether it is encrypted. If passkey is provided and the file
-  // is encrypted, also return the decrypted plaintext in `decrypted`.
+  // Return the raw file contents and whether it is encrypted
   async function fetchRawFlo(passkey?: string): Promise<{ raw: string | null; isEncrypted: boolean; decrypted?: string; path: string; base64Decoded?: string; info?: { exists: boolean; size?: number; modificationTime?: number; readError?: string } }> {
     const uid = userId ?? providedUserId;
     if (!uid) throw new Error('No user set');
     const path = storageKey(uid);
-  let info: { exists: boolean; size?: number; modificationTime?: number; readError?: string } | undefined;
+    let info: { exists: boolean; size?: number; modificationTime?: number; readError?: string } | undefined;
+    
     try {
       const stat = await FileSystem.getInfoAsync(path);
       info = { exists: !!stat.exists };
-      // size/modificationTime may not be present on all SDKs, include them if available
       if ((stat as any).size) info.size = (stat as any).size;
       if ((stat as any).modificationTime) info.modificationTime = (stat as any).modificationTime;
     } catch (e) {
@@ -583,18 +825,16 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
 
     const raw = await loadRaw(uid);
     if (!raw) {
-      // file exists but couldn't be read, add diagnostic
       if (info && info.exists) info.readError = 'file exists but could not be read (encoding?)';
       return { raw: null, isEncrypted: false, path, info };
     }
 
     const isEncrypted = typeof raw === 'string' && raw.startsWith(PREFIX);
-    // If file was returned as BASE64:..., try to decode it to UTF-8 to reveal any BROM_ prefix
-  if (typeof raw === 'string' && raw.startsWith('BASE64:')) {
+    
+    if (typeof raw === 'string' && raw.startsWith('BASE64:')) {
       const b64 = raw.substring('BASE64:'.length);
       try {
         const words = CryptoJS.enc.Base64.parse(b64);
-        // Decode using WordArray->Uint8Array -> TextDecoder path to avoid artifacts
         let decoded = '';
         try {
           const u8 = ((): Uint8Array => {
@@ -614,7 +854,6 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
           if (typeof TextDecoder !== 'undefined') {
             try { decoded = new TextDecoder('utf-8').decode(u8); } catch (e) { decoded = new TextDecoder('iso-8859-1').decode(u8); }
           } else {
-            // fallback
             let latin1 = '';
             for (let i = 0; i < u8.length; i++) latin1 += String.fromCharCode(u8[i]);
             try { decoded = decodeURIComponent(escape(latin1)); } catch (e) { decoded = latin1; }
@@ -623,7 +862,7 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
           try { decoded = words.toString(CryptoJS.enc.Latin1); decoded = decodeURIComponent(escape(decoded)); } catch (e2) { /* ignore */ }
         }
         const decodedIsEncrypted = decoded.startsWith(PREFIX);
-          if (decodedIsEncrypted) {
+        if (decodedIsEncrypted) {
           const rawPass = await resolveStoredOrProvidedPasskey(uid, passkey as string | undefined);
           if (!rawPass) {
             console.log('setkeylogiclater');
@@ -632,7 +871,6 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
           try {
             let decrypted = decryptString(decoded, uid, rawPass);
             try { const parsedOnce = JSON.parse(decrypted); if (typeof parsedOnce === 'string') decrypted = parsedOnce; } catch (e) { /* ignore */ }
-            // Unescape JSON-like escape sequences if present
             if (typeof decrypted === 'string' && decrypted.includes('\\')) {
               try {
                 const wrapped = `"${decrypted.replace(/"/g, '\\"')}"`;
@@ -646,10 +884,8 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
             return { raw, isEncrypted: true, path, base64Decoded: decoded, info };
           }
         }
-        // Not prefixed; return decoded as plaintext
         return { raw, isEncrypted: false, path, base64Decoded: decoded, info };
       } catch (e) {
-        // could not decode base64 to utf8; return base64 only
         return { raw, isEncrypted: false, path, info };
       }
     }
@@ -680,7 +916,7 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
     return { raw, isEncrypted: false, path, info };
   }
 
-  // List files under the flo/ directory so caller can inspect what files exist
+  // List files under the flo/ directory
   async function listFloFiles(): Promise<string[]> {
     const dir = `${FileSystem.documentDirectory}flo`;
     try {
@@ -694,26 +930,156 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
     }
   }
 
+  // Remove empty journal chunks
+  async function removeEmptyJournalChunks(passkey?: string) {
+    const uid = userId ?? providedUserId;
+    if (!uid) throw new Error('No user set');
+    
+    const effective = passkey ?? (await getPasskey());
+    const raw = await loadRaw(uid);
+    if (!raw) return;
+    
+    let parsed: any = {};
+    if (typeof raw === 'string' && raw.startsWith(PREFIX)) {
+      if (!effective) throw new Error('Passkey required to modify data');
+      const dec = decryptString(raw, uid, effective);
+      parsed = JSON.parse(dec || '{}');
+    } else {
+      parsed = JSON.parse(String(raw || '{}'));
+    }
+    
+    if (!parsed || !parsed['journal']) return;
+    
+    const journalObj = parsed['journal'];
+    const toDelete: string[] = [];
+    
+    for (const chunkKey of Object.keys(journalObj)) {
+      const encryptedPayload = journalObj[chunkKey];
+      let count = 0;
+      
+      if (typeof encryptedPayload === 'string' && encryptedPayload.startsWith(PREFIX)) {
+        if (effective) {
+          try {
+            const dec = decryptString(encryptedPayload, uid, effective);
+            const chunkMap = JSON.parse(dec || '{}');
+            count = Object.keys(chunkMap || {}).length;
+          } catch (e) { count = 0; }
+        }
+      } else if (typeof encryptedPayload === 'object') {
+        count = Object.keys(encryptedPayload).length;
+      }
+      
+      if (count === 0) toDelete.push(chunkKey);
+    }
+    
+    for (const k of toDelete) {
+      delete journalObj[k];
+    }
+    
+    parsed['journal'] = journalObj;
+    
+    const finalStore = JSON.stringify(parsed);
+    await saveRaw(finalStore, uid);
+  }
+
+  // --- Encrypted user profile helpers stored under `userinfo` in the .flo ---
+  async function getUserProfile(passkey?: string): Promise<any | null> {
+    const uid = userId ?? providedUserId;
+    if (!uid) throw new Error('No user set');
+
+    const raw = await loadRaw(uid);
+    if (!raw) return null;
+
+    let parsed: FloData | null = null;
+    if (typeof raw === 'string' && raw.startsWith(PREFIX)) {
+      const rawPass = await resolveStoredOrProvidedPasskey(uid, passkey as string | undefined);
+      if (!rawPass) throw new Error('Passkey required to decrypt data');
+      const dec = decryptString(raw, uid, rawPass);
+      try { parsed = JSON.parse(dec) as FloData; } catch (e) { return null; }
+    } else {
+      try { parsed = JSON.parse(String(raw)) as FloData; } catch (e) { return null; }
+    }
+
+    if (!parsed) return null;
+    const val = (parsed as any)['userinfo'];
+    if (!val) return null;
+
+    if (typeof val === 'string' && val.startsWith(PREFIX)) {
+      const rawPass = await resolveStoredOrProvidedPasskey(uid, passkey as string | undefined);
+      if (!rawPass) throw new Error('Passkey required to decrypt data');
+      try {
+        const dec = decryptString(val, uid, rawPass);
+        try { return JSON.parse(dec); } catch (e) { return dec; }
+      } catch (e) { return null; }
+    }
+
+    return val;
+  }
+
+  async function saveUserProfile(profile: any, passkey?: string): Promise<void> {
+    const uid = userId ?? providedUserId;
+    if (!uid) throw new Error('No user set');
+
+    // Load existing
+    const raw = await loadRaw(uid);
+    let data: FloData = { journal: {} };
+
+    if (raw) {
+      if (typeof raw === 'string' && raw.startsWith(PREFIX)) {
+        const effectiveForRead = passkey ?? (await (async () => { try { return await getPasskey(); } catch { return undefined; } })());
+        if (!effectiveForRead) throw new Error('Passkey required to decrypt data');
+        const decrypted = decryptString(raw, uid, effectiveForRead);
+        try { data = JSON.parse(decrypted) as FloData; } catch (e) { data = { journal: {} }; }
+      } else {
+        try { data = JSON.parse(String(raw)) as FloData; } catch (e) { data = { journal: {} }; }
+      }
+    }
+
+    let effective: string | undefined = passkey as string | undefined;
+    if (!effective) {
+      try { const gp = await getPasskey(); if (gp) effective = gp; } catch (e) { /* ignore */ }
+    }
+
+    if (effective) {
+      const toEncrypt = JSON.stringify(profile);
+      const encrypted = encryptString(toEncrypt, uid, effective);
+      (data as any)['userinfo'] = encrypted;
+    } else {
+      (data as any)['userinfo'] = profile;
+    }
+
+    try { delete (data as any).user; } catch (e) { /* ignore */ }
+    const finalStore = JSON.stringify(data);
+    await saveRaw(finalStore, uid);
+
+    try { parsedFileRef.current = { raw: finalStore, parsed: data }; } catch (e) { /* ignore */ }
+    try { categoryCacheRef.current = categoryCacheRef.current ?? {}; categoryCacheRef.current['userinfo'] = profile; } catch (e) { /* ignore */ }
+  }
+
   const value: SafeUserDataContextValue = {
     userId,
     setUser,
     readCategory,
     writeCategory,
-  fetchRawFlo,
-  listFloFiles,
+    fetchRawFlo,
+    listFloFiles,
     listJournalEntries,
-    // expose send-only methods for writers (editor/creator)
+    readAllJournalChunks,
+    warmLatestJournalEntries,
+    removeEmptyJournalChunks,
     sendCreateJournalEntry: async (input, passkey) => createJournalEntry(input, passkey),
     sendUpdateJournalEntry: async (id, patch, passkey) => updateJournalEntry(id, patch, passkey),
     sendDeleteJournalEntry: async (id, passkey) => deleteJournalEntry(id, passkey),
-  setPasskey,
-  getPasskey,
-  getPasskeyExists,
-  activateSessionPasskey,
-  clearSessionPasskey,
-  getCachedCategory,
-  clearPasskey,
-  deleteUserFlo: async () => deleteRaw(),
+    setPasskey,
+    getPasskey,
+    getPasskeyExists,
+    activateSessionPasskey,
+    clearSessionPasskey,
+    getCachedCategory,
+    clearPasskey,
+    deleteUserFlo: async () => deleteRaw(),
+  getUserProfile: async (passkey) => getUserProfile(passkey),
+  saveUserProfile: async (profile, passkey) => saveUserProfile(profile, passkey),
   };
 
   return <SafeUserDataContext.Provider value={value}>{children}</SafeUserDataContext.Provider>;

@@ -42,32 +42,54 @@ export default function EntCreator({ visible = false, onClose, onSave }: Props) 
 
   const [title, setTitle] = useState('');
   
-  // Generate default title when the creator opens (cache-first to avoid heavy decryption)
-  const { listJournalEntries, getCachedCategory } = useSafeUserData();
+  // Generate default title when the creator opens by reading chunk counts directly (avoids cache miss issues)
+  const { readAllJournalChunks, listJournalEntries, getCachedCategory } = useSafeUserData();
 
   useEffect(() => {
     if (visible) {
-      // Compute the next sequential entry number using cached entries first (non-blocking).
       (async () => {
-        let nextNumber = Math.floor(Date.now() / 1000) % 100000; // fallback
+        let total = 0;
+        let preferredChunk: string | undefined;
         try {
-          // Prefer quick synchronous cache lookup to avoid triggering decryption/KDF
-          const cached = getCachedCategory && getCachedCategory('journal');
-          if (cached && typeof cached === 'object') {
-            nextNumber = Object.keys(cached).length + 1;
-          } else {
-            const list = await listJournalEntries();
-            if (Array.isArray(list)) nextNumber = list.length + 1;
+          if (readAllJournalChunks) {
+              const chunks = await readAllJournalChunks();
+              // compute totals and choose preferred chunk as the latest chunk with room
+              let idx = 1;
+              for (const name of Object.keys(chunks)) {
+                const size = Object.keys(chunks[name] ?? {}).length;
+                total += size;
+                if (!preferredChunk && size < 15) preferredChunk = name;
+                idx++;
+              }
+              if (!preferredChunk) preferredChunk = `journal${idx}`;
+            } else {
+            // fallback to cache/list
+            const cached = getCachedCategory && getCachedCategory('journal');
+            if (cached && typeof cached === 'object') {
+              total = Object.keys(cached).length;
+            } else {
+              const list = await listJournalEntries();
+              total = Array.isArray(list) ? list.length : 0;
+            }
           }
         } catch (e) {
-          // ignore and use fallback
+          try {
+            const cached = getCachedCategory && getCachedCategory('journal');
+            if (cached && typeof cached === 'object') total = Object.keys(cached).length;
+            else {
+              const list = await listJournalEntries();
+              total = Array.isArray(list) ? list.length : 0;
+            }
+          } catch (e) { total = 0; }
         }
-        setEntryNumber(nextNumber);
-        const baseWord = t('entry.new').toLowerCase().startsWith('new') ? 'Entry' : 'Registro';
-        setTitle(`${baseWord} ${nextNumber}`.slice(0, 64));
+
+  const nextNumber = total + 1;
+  setEntryNumber(nextNumber);
+  const baseWord = t('entry.new').toLowerCase().startsWith('new') ? 'Entry' : 'Registro';
+  setTitle(`${baseWord} ${nextNumber}`.slice(0, 64));
       })();
     }
-  }, [visible, t, listJournalEntries]);
+  }, [visible, t, listJournalEntries, readAllJournalChunks]);
 
   // Keep track of the entry number
   const [entryNumber, setEntryNumber] = useState<number>(0);

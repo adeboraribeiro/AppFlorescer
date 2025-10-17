@@ -24,6 +24,8 @@ export default function EditEntryView() {
   const cachedEntry = entryId ? (cachedJournal && typeof cachedJournal === 'object' ? (cachedJournal as any)[entryId] : undefined) : undefined;
   const [title, setTitle] = useState<string>(cachedEntry?.title ?? initialTitle);
   const [body, setBody] = useState<string>(cachedEntry?.body ?? '');
+  // Max characters per entry (title + body combined will be constrained server-side as well)
+  const MAX_ENTRY_CHARS = 15000;
   // local id for new entries so editor never needs to read from storage
   const [generatedId, setGeneratedId] = useState<string | undefined>(undefined);
  
@@ -49,6 +51,30 @@ export default function EditEntryView() {
   const [showOverlay, setShowOverlay] = useState(false);
   const [overlayText, setOverlayText] = useState<string | undefined>(undefined);
   const overlayTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Prevent concurrent saves
+  const savingRef = React.useRef(false);
+  const [saving, setSaving] = useState(false);
+  // Per-session save cooldown (one click every 15s). Cleared when editor unmounts.
+  const saveCooldownRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [saveCooldownActive, setSaveCooldownActive] = useState(false);
+
+  const startSaveCooldown = (ms = 15000) => {
+    try { if (saveCooldownRef.current) { clearTimeout(saveCooldownRef.current as any); saveCooldownRef.current = null; } } catch (e) {}
+    setSaveCooldownActive(true);
+    saveCooldownRef.current = setTimeout(() => {
+      saveCooldownRef.current = null;
+      setSaveCooldownActive(false);
+    }, ms);
+  };
+
+  // Clear cooldown timer when editor unmounts so cooldown is per session
+  useEffect(() => {
+    return () => {
+      try { if (saveCooldownRef.current) { clearTimeout(saveCooldownRef.current as any); saveCooldownRef.current = null; } } catch (e) {}
+      setSaveCooldownActive(false);
+    };
+  }, []);
 
   // Track the last saved snapshot to avoid redundant autosaves
   const lastSavedRef = React.useRef<{ title: string; body: string }>({ title: (cachedEntry?.title ?? initialTitle).trim(), body: (cachedEntry?.body ?? '').trim() });
@@ -264,7 +290,7 @@ export default function EditEntryView() {
             try { DeviceEventEmitter.emit('floDeleted'); } catch (e) { /* ignore */ }
             // close modal and return to previous screen to avoid autosave recreating file
             setShowEncModal(false);
-            try { router.back(); } catch (e) { /* ignore */ }
+            try { router.push('/journal'); } catch (e) { /* ignore */ }
           } catch (e) {
             const msg = (e && (e as any).message) ? (e as any).message : String(e);
             Alert.alert(t('journal.clear_failed', 'Failed to clear'), msg);
@@ -276,6 +302,10 @@ export default function EditEntryView() {
 
   // saveEntry: saves and optionally navigates back. Used by autosave (navigateBack=false)
   const handleSave = async (navigateBack: boolean = true) => {
+  // Prevent re-entrancy: if a save is already in-flight, skip this request
+  if (savingRef.current) return;
+  savingRef.current = true;
+  setSaving(true);
     const trimmedTitle = title.trim();
     const trimmedBody = body.trim();
 
@@ -298,8 +328,16 @@ export default function EditEntryView() {
     };
 
     try {
-      // For user-initiated save + navigateBack, await provider so we can show overlay
-      if (navigateBack) startOverlayWithDelay(t('entry.saving', 'Saving...'));
+      // For user-initiated save + navigateBack, show overlay immediately so it can render
+      if (navigateBack) {
+        try {
+          if (overlayTimer.current) { clearTimeout(overlayTimer.current as any); overlayTimer.current = null; }
+        } catch (e) {}
+        setOverlayText(t('entry.saving', 'Saving...'));
+        setShowOverlay(true);
+        // yield to renderer so overlay is painted before heavy crypto work
+        await new Promise((res) => setTimeout(res, 60));
+      }
 
       if (currentId) {
         // update existing entry
@@ -326,13 +364,19 @@ export default function EditEntryView() {
 
       if (navigateBack) {
         stopOverlay();
-        router.back();
+  router.push('/journal');
       }
     } catch (e) {
       console.warn('Failed to send entry:', e);
+      // ensure overlay is dismissed if saving before navigating back
+      if (navigateBack) stopOverlay();
     }
   // update lastSaved snapshot to current content (optimistic)
   try { lastSavedRef.current = { title: title.trim(), body: body.trim() }; } catch (e) {}
+  finally {
+    savingRef.current = false;
+    setSaving(false);
+  }
   };
 
   // Autosave: save 2s after last change to title/body
@@ -444,7 +488,7 @@ export default function EditEntryView() {
       )}
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.iconTouch}>
+  <TouchableOpacity onPress={() => router.push('/journal')} style={styles.iconTouch}>
           <Ionicons name="chevron-back" size={24} color="#4dccc1" />
         </TouchableOpacity>
         <View style={styles.headerCenter}>
@@ -453,9 +497,16 @@ export default function EditEntryView() {
       <TouchableOpacity onPress={openEncryptionView} style={[styles.iconTouch, { marginRight: 8 }]}> 
               <Text style={{ color: '#4dccc1', fontWeight: '700' }}>{t('entry.view_encryption', 'View Encryption')}</Text>
             </TouchableOpacity>
+      <TouchableOpacity onPress={clearEncryption} style={[styles.iconTouch, { marginRight: 8 }]}> 
+              <Text style={{ color: '#ff5c5c', fontWeight: '700' }}>{t('entry.clear_file', 'Clear File')}</Text>
+            </TouchableOpacity>
       <TouchableOpacity 
-              onPress={() => { handleSave(true); }} 
-              disabled={!title.trim() || !body.trim()} 
+              onPress={() => {
+                if (saveCooldownActive || savingRef.current) return;
+                startSaveCooldown(15000);
+                void handleSave(true);
+              }} 
+              disabled={!title.trim() || !body.trim() || saveCooldownActive || saving}
               style={styles.saveTouch}>
           <View style={[
             styles.saveButton,
@@ -514,7 +565,7 @@ export default function EditEntryView() {
               placeholder={t('entry.start_writing')} 
               placeholderTextColor={placeholderColor}
               value={body}
-              onChangeText={setBody}
+              onChangeText={(text) => setBody(text.slice(0, MAX_ENTRY_CHARS))}
               multiline
               textAlignVertical="top"
               style={[styles.bodyInput, { 
@@ -626,8 +677,8 @@ export default function EditEntryView() {
 
             <View style={{ marginTop: 12, flexDirection: 'row', justifyContent: 'flex-end' }}>
               <TouchableOpacity style={[styles.cardButton]} onPress={() => setShowEncModal(false)}>
-                <Text style={{ color: '#4dccc1', fontWeight: '700' }}>{t('close', 'Close')}</Text>
-              </TouchableOpacity>
+                  <Text style={{ color: '#4dccc1', fontWeight: '700' }}>{t('close', 'Close')}</Text>
+                </TouchableOpacity>
             </View>
           </View>
         </View>

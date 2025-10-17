@@ -18,6 +18,15 @@ export default function TabBarBackground({ isDarkMode = false, enabledModules = 
   const [isNavigating, setIsNavigating] = React.useState(false);
   const navigationTimeout = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const currentRoute = React.useRef<string>('/home'); // Initialize with home route
+  // Sync currentRoute with actual router path to avoid stale state after programmatic navigation
+  React.useEffect(() => {
+    try {
+      const path = (router && (router as any).pathname) ? (router as any).pathname : undefined;
+      if (path && typeof path === 'string') currentRoute.current = path;
+    } catch (e) {
+      // ignore
+    }
+  }, []);
   const CLICK_TIMEOUT = 300; // 300ms timeout between clicks
 
   // Clear timeout on unmount

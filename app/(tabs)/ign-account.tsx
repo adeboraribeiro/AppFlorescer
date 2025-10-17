@@ -1,6 +1,7 @@
 // ProfileScreen.tsx
 import Providers from '@/components/Providers';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BlurView } from 'expo-blur';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { router, useSegments } from 'expo-router';
@@ -1001,6 +1002,22 @@ export default function ProfileScreen() {
 
       // Refresh context profile
       await fetchUserProfile();
+
+      // Persist the profile image URL to AsyncStorage per-user so it can be used as a cached PFP
+      try {
+        const { data: authData } = await supabase.auth.getUser();
+        const user = authData?.user;
+        if (user) {
+          const key = `@florescer:pfp_url_v1:${user.id}`;
+          if (profileImageUrl) {
+            await AsyncStorage.setItem(key, profileImageUrl);
+          } else {
+            await AsyncStorage.removeItem(key);
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to persist profileImage to AsyncStorage', e);
+      }
 
       // Diagnostic: re-read profile row and list storage contents for user's folder
       try {
