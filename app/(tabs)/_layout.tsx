@@ -932,18 +932,6 @@ export default function TabsLayoutA() {
   // Hide header/tabbar when route segment begins with 'ign-' or when viewing the ent-editor route
   const activeSegment = Array.isArray(segments) && segments.length > 0 ? String(segments[segments.length - 1]) : '';
   const suppressChrome = activeSegment.startsWith('ign-') || activeSegment === 'ent-editor';
-  // Remember previous active segment so we can enforce returning to journal when ent-editor unmounts
-  const prevActiveSegmentRef = React.useRef<string | null>(null);
-  React.useEffect(() => {
-    try {
-      const prev = prevActiveSegmentRef.current;
-      if (prev === 'ent-editor' && activeSegment !== 'ent-editor') {
-        // ent-editor was active and now is not — ensure we end up at /journal so TabBar state aligns
-        try { router.replace('/journal'); } catch (e) { /* ignore */ }
-      }
-    } catch (e) { /* ignore */ }
-    prevActiveSegmentRef.current = activeSegment;
-  }, [activeSegment]);
   const [enabledModules, setEnabledModules] = useState<string[]>([]);
   const [visibleSlots, setVisibleSlots] = useState<boolean[]>(Array(5).fill(true));
   // Global overlay state: screens can request an overlay by emitting events
@@ -989,22 +977,6 @@ export default function TabsLayoutA() {
       setOverlayComp(null);
     }
     return () => { mounted = false; };
-  }, [overlay]);
-
-  // If an editor overlay (entcreator / edit-entry) closes, enforce routing back to /journal
-  const prevOverlayNameRef = React.useRef<string | null>(null);
-  React.useEffect(() => {
-    try {
-      const prev = prevOverlayNameRef.current;
-      const name = overlay?.name ?? null;
-      // Detect transition from overlay -> null
-      if (prev && !name) {
-        if (prev === 'entcreator' || prev === 'edit-entry' || prev === 'edit-entry') {
-          try { router.replace('/journal'); } catch (e) { /* ignore */ }
-        }
-      }
-      prevOverlayNameRef.current = name;
-    } catch (e) { /* ignore */ }
   }, [overlay]);
 
   useEffect(() => {
