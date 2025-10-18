@@ -1,8 +1,8 @@
 // ProfileScreen.tsx
 import Providers from '@/components/Providers';
 import { Ionicons } from '@expo/vector-icons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BlurView } from 'expo-blur';
+import * as FileSystem from 'expo-file-system';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { router, useSegments } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -29,6 +29,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import ImageCropperPopup from '../../components/ImageCropperPopup';
 import LogoutConfirmationModal from '../../components/LogoutConfirmationModal';
 import OTPpopup from '../../components/OTPpopup';
+import { useSafeUserData } from '../../components/SafeUserDataProvider';
+import useNetworkState from '../../components/useNetworkState';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useUser } from '../../contexts/UserContext';
@@ -154,27 +156,35 @@ const AvatarPicker: React.FC<{
   uri?: string | null; 
   onPick: () => void; 
   styles: any;
-}> = ({ uri, onPick, styles }) => (
-  <View style={styles.imageContainer}>
-    <View style={styles.avatarContainer}>
-      {uri ? (
-        <Image source={{ uri }} style={styles.avatar} />
-      ) : (
-        <View style={[styles.avatar, styles.avatarPlaceholder]}>
-          <Ionicons name="person" size={40} color="#80E6D9" />
-        </View>
-      )}
+}> = ({ uri, onPick, styles }) => {
+  const { isOffline } = useNetworkState();
+
+  return (
+    <View style={styles.imageContainer}>
+      <View style={styles.avatarContainer}>
+        {uri ? (
+          <View style={{ position: 'relative' }}>
+            <Image source={{ uri }} style={styles.avatar} />
+            <View style={[styles.networkDot, isOffline ? styles.dotOffline : styles.dotOnline]} />
+          </View>
+        ) : (
+          <View style={[styles.avatar, styles.avatarPlaceholder, { position: 'relative' }]}>
+            <Ionicons name="person" size={40} color="#80E6D9" />
+            <View style={[styles.networkDot, isOffline ? styles.dotOffline : styles.dotOnline]} />
+          </View>
+        )}
+      </View>
+      <TouchableOpacity 
+        onPress={onPick} 
+        style={styles.cameraButton} 
+        activeOpacity={0.85}
+        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+      >
+        <Ionicons name="camera" size={20} color="#E0F7F4" />
+      </TouchableOpacity>
     </View>
-    <TouchableOpacity 
-      onPress={onPick} 
-      style={styles.cameraButton} 
-      activeOpacity={0.85}
-      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-    >
-      <Ionicons name="camera" size={20} color="#E0F7F4" />
-    </TouchableOpacity>
-  </View>
-);
+  );
+};
 
 const ValidatedInput = React.forwardRef<TextInput, {
   value: string;
@@ -236,13 +246,13 @@ const LockableField: React.FC<any> = ({ styles, fieldKey, activeField, setActive
   const editable = activeField === fieldKey;
 
   const enableEdit = () => {
-    setActiveField(fieldKey);
+  setActiveField(fieldKey);
     setTimeout(() => inputRef.current?.focus(), 50);
   };
 
   const disableEdit = () => {
     inputRef.current?.blur();
-    setActiveField(null);
+  setActiveField(null);
   };
 
   // double-tap detection: two taps within 300ms enable editing
@@ -300,13 +310,13 @@ const BirthdateField: React.FC<any> = ({ styles, fieldKey, activeField, setActiv
   const [selection, setSelection] = useState<{ start: number; end: number } | undefined>(undefined);
 
   const enableEdit = () => {
-    setActiveField(fieldKey);
+  setActiveField(fieldKey);
     setTimeout(() => inputRef.current?.focus(), 50);
   };
 
   const disableEdit = () => {
     inputRef.current?.blur();
-    setActiveField(null);
+  setActiveField(null);
   };
 
   const handleChange = (text: string) => {
@@ -484,7 +494,8 @@ const useFormValidation = (userProfile: any, initialUsername?: string) => {
 // Main component
 export default function ProfileScreen() {
   const { t } = useTranslation();
-  const { userProfile, fetchUserProfile } = useUser();
+  const { userProfile, fetchUserProfile, isLocalProfile, setUserProfile, setIsLocalProfile } = useUser();
+  const { savePfpToLocal, deleteLocalPfp, deleteCredentialsFromSecureStore, clearPasskey, deleteUserFlo } = useSafeUserData();
   const { theme } = useTheme();
   const { showNotification } = useNotification();
   const isDarkMode = theme === 'dark';
@@ -509,12 +520,14 @@ export default function ProfileScreen() {
   const [isInitialized, setIsInitialized] = useState(false);
   // which field is currently editable; only one may be active at a time
   const [activeField, setActiveField] = useState<string | null>(null);
+  const activeFieldRef = useRef<string | null>(null);
   // Local preview for profile picture: show immediately but don't persist until update
   const [selectedImageUri, setSelectedImageUri] = useState<string | null>(null);
   // Store base64 from the picker when available so uploads don't rely on fetch(file://)
   const [selectedImageBase64, setSelectedImageBase64] = useState<string | null>(null);
   // UI state for profile update in progress
   const [isUpdating, setIsUpdating] = useState(false);
+  const { isOffline } = useNetworkState();
   // Track whether the form differs from the original snapshot (dirty)
   const isDirty = useMemo(() => {
     // Only consider dirty once we have initialized the original values
@@ -542,6 +555,20 @@ export default function ProfileScreen() {
   const segments = useSegments();
 
   // Reset fade when this screen becomes active so it is visible on reopen
+  useEffect(() => {
+    // keep ref in sync so effects can access latest activeField
+    activeFieldRef.current = activeField;
+  }, [activeField]);
+
+  // When the combined network state reports offline, clear any active edit
+  // and notify the user. This uses `useNetworkState` (NetInfo + backend health).
+  useEffect(() => {
+    if (isOffline && activeFieldRef.current) {
+      try { setActiveField(null); } catch (e) { /* ignore */ }
+      try { showNotification(t('profile.offline_edit_disabled') || 'Editing disabled while offline', 'error'); } catch (e) { /* ignore */ }
+    }
+  }, [isOffline, showNotification, t]);
+
   useEffect(() => {
     try {
       const segStrings = Array.isArray(segments) ? segments.map(s => String(s)) : [];
@@ -622,6 +649,18 @@ export default function ProfileScreen() {
     setFormData(prev => ({ ...prev, [field]: value }));
     validation.validateField(field, value);
   };
+
+  // Prevent entering edit mode when profile is loaded from local fallback
+  function guardedSetActiveField(fieldKey: string | null) {
+    // Allow clearing the active field even when offline; only block attempts
+    // to enable editing (i.e. setting a non-null fieldKey) while using a
+  // local profile or when network is offline.
+  if (fieldKey !== null && (isLocalProfile || isOffline)) {
+      showNotification(t('profile.offline_edit_disabled') || 'Editing disabled while offline', 'error');
+      return;
+    }
+    setActiveField(fieldKey);
+  }
   
   const handleNameChange = (field: 'firstName' | 'lastName', text: string) => {
     if (text.length <= 20) {
@@ -1003,20 +1042,20 @@ export default function ProfileScreen() {
       // Refresh context profile
       await fetchUserProfile();
 
-      // Persist the profile image URL to AsyncStorage per-user so it can be used as a cached PFP
+      // Persist the profile image locally via provider helper so offline displays a saved file
       try {
         const { data: authData } = await supabase.auth.getUser();
         const user = authData?.user;
         if (user) {
-          const key = `@florescer:pfp_url_v1:${user.id}`;
-          if (profileImageUrl) {
-            await AsyncStorage.setItem(key, profileImageUrl);
-          } else {
-            await AsyncStorage.removeItem(key);
+          if (profileImageUrl && savePfpToLocal) {
+            const local = await savePfpToLocal(profileImageUrl);
+            if (local) profileImageUrl = local;
+          } else if (!profileImageUrl && deleteLocalPfp) {
+            await deleteLocalPfp();
           }
         }
       } catch (e) {
-        console.warn('Failed to persist profileImage to AsyncStorage', e);
+        console.warn('Failed to persist profileImage locally', e);
       }
 
       // Diagnostic: re-read profile row and list storage contents for user's folder
@@ -1058,6 +1097,8 @@ export default function ProfileScreen() {
       flex: 1,
       opacity: fadeOutAnim,
     }}>
+    {/* When offline, individual controls show a notification on attempted interaction.
+      Removed the full-screen overlay so header/back navigation remains responsive. */}
       <View style={styles.notifBar} />
       <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -1073,9 +1114,17 @@ export default function ProfileScreen() {
                 {t('profile.title')}
               </Text>
 
-              <TouchableOpacity onPress={() => setShowLogoutModal(true)} style={styles.iconTouch}>
-                <Ionicons name="log-out-outline" size={24} color="#4dccc1" />
-              </TouchableOpacity>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <TouchableOpacity
+                  onPress={() => {
+                    if (isLocalProfile || isOffline) { showNotification(t('profile.offline_logout_disabled') || 'Logout disabled while offline', 'error'); return; }
+                    setShowLogoutModal(true);
+                  }}
+                  style={styles.iconTouch}
+                >
+                  <Ionicons name="log-out-outline" size={24} color="#4dccc1" />
+                </TouchableOpacity>
+              </View>
             </View>
 
             {/* Avatar */}
@@ -1088,10 +1137,16 @@ export default function ProfileScreen() {
                   const displayUri = selectedImageUri ?? (remoteIsHttp ? remote : (remote ?? null));
                   return (
                     <AvatarPicker
-                      uri={displayUri}
-                      onPick={() => setShowCropper(true)}
-                      styles={styles}
-                    />
+                        uri={displayUri}
+                        onPick={() => {
+                          if (isLocalProfile || isOffline) {
+                            showNotification(t('profile.offline_image_disabled') || 'Image uploads disabled while offline', 'error');
+                            return;
+                          }
+                          setShowCropper(true);
+                        }}
+                        styles={styles}
+                      />
                   );
                 })()
               }
@@ -1106,7 +1161,7 @@ export default function ProfileScreen() {
                     styles={styles}
                     fieldKey="firstName"
                     activeField={activeField}
-                    setActiveField={setActiveField}
+                    setActiveField={guardedSetActiveField}
                     value={formData.firstName}
                     onChangeText={(text: string) => handleNameChange('firstName', text)}
                     placeholder={t('auth.fields.name')}
@@ -1124,7 +1179,7 @@ export default function ProfileScreen() {
                     styles={styles}
                     fieldKey="lastName"
                     activeField={activeField}
-                    setActiveField={setActiveField}
+                    setActiveField={guardedSetActiveField}
                     value={formData.lastName}
                     onChangeText={(text: string) => handleNameChange('lastName', text)}
                     placeholder={t('auth.fields.last_name')}
@@ -1143,7 +1198,7 @@ export default function ProfileScreen() {
                 styles={styles}
                 fieldKey="birthDate"
                 activeField={activeField}
-                setActiveField={setActiveField}
+                setActiveField={guardedSetActiveField}
                 value={formData.birthDate}
                 onChangeText={handleBirthDateChange}
                 placeholder={t('auth.birthdate_placeholder')}
@@ -1159,7 +1214,7 @@ export default function ProfileScreen() {
                 styles={styles}
                 fieldKey="username"
                 activeField={activeField}
-                setActiveField={setActiveField}
+                setActiveField={guardedSetActiveField}
                 prefix="@"
                 value={formData.username}
                 onChangeText={handleUsernameChange}
@@ -1176,7 +1231,14 @@ export default function ProfileScreen() {
 
               {/* Action buttons */}
               <View style={styles.actionButtonsRow}>
-                <TouchableOpacity activeOpacity={0.85} style={styles.actionButton} onPress={handleSendPasswordReset}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  style={[styles.actionButton]}
+                  onPress={async () => {
+                    if (isLocalProfile || isOffline) { showNotification(t('profile.offline_action_disabled') || 'This action is disabled while offline', 'error'); return; }
+                    await handleSendPasswordReset();
+                  }}
+                >
                   <Ionicons name="key-outline" size={24} color={COLORS.accent} />
                   {sendingPasswordReset ? (
                     <ActivityIndicator size="small" color={COLORS.accent} />
@@ -1187,7 +1249,14 @@ export default function ProfileScreen() {
                 
                 <View style={{ width: 5 }} />
                 
-                <TouchableOpacity activeOpacity={0.85} style={styles.actionButton} onPress={handleStartEmailChange}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  style={[styles.actionButton]}
+                  onPress={() => {
+                    if (isLocalProfile || isOffline) { showNotification(t('profile.offline_action_disabled') || 'This action is disabled while offline', 'error'); return; }
+                    handleStartEmailChange();
+                  }}
+                >
                   <Ionicons name="mail-outline" size={24} color={COLORS.accent} />
                   <Text style={styles.actionButtonText}>{t('profile.actions.change_email')}</Text>
                 </TouchableOpacity>
@@ -1196,24 +1265,27 @@ export default function ProfileScreen() {
               {/* Update button */}
               {(() => {
                 const disabled = !isDirty || isUpdating;
+                const updateDisabled = disabled || isLocalProfile || isOffline;
                 return (
                   <TouchableOpacity
-                    activeOpacity={disabled ? 1 : 0.85}
-                    accessibilityState={{ disabled }}
+                    activeOpacity={updateDisabled ? 1 : 0.85}
+                    accessibilityState={{ disabled: updateDisabled }}
                     style={[
-                      styles.button,
-                        disabled ? { opacity: 0.6 } : {},
-                        // Change border color when disabled so outline isn't bright cyan
-                        disabled ? { borderColor: '#9CCFC8' } : { borderColor: '#4DCCC1' },
-                      isUpdating ? { opacity: 0.9 } : {}
-                    ]}
-                    onPress={handleProfileUpdate}
-                    disabled={disabled}
+                        styles.button,
+                          updateDisabled ? { opacity: 0.6 } : {},
+                          // Change border color when disabled so outline isn't bright cyan
+                          updateDisabled ? { borderColor: '#9CCFC8' } : { borderColor: '#4DCCC1' },
+                        isUpdating ? { opacity: 0.9 } : {}
+                      ]}
+                    onPress={async () => {
+                      if (isLocalProfile || isOffline) { showNotification(t('profile.offline_action_disabled') || 'This action is disabled while offline', 'error'); return; }
+                      await handleProfileUpdate();
+                    }}
                   >
                     {isUpdating ? (
                       <ActivityIndicator size="small" color={COLORS.accent} />
                     ) : (
-                      <Text style={disabled ? styles.buttonTextDisabled : styles.buttonText}>
+                      <Text style={updateDisabled ? styles.buttonTextDisabled : styles.buttonText}>
                         {t('profile.buttons.update_profile') || 'Update'}
                       </Text>
                     )}
@@ -1226,7 +1298,35 @@ export default function ProfileScreen() {
               isVisible={showLogoutModal}
               onClose={() => setShowLogoutModal(false)}
               onLogout={async () => {
-                await supabase.auth.signOut();
+                // close modal
+                setShowLogoutModal(false);
+
+                // Best-effort local data purge
+                try {
+                  if (deleteLocalPfp) await deleteLocalPfp();
+                } catch (e) { console.warn('deleteLocalPfp failed', e); }
+                try {
+                  if (deleteCredentialsFromSecureStore) await deleteCredentialsFromSecureStore();
+                } catch (e) { console.warn('deleteCredentialsFromSecureStore failed', e); }
+                try {
+                  if (clearPasskey) await clearPasskey();
+                } catch (e) { console.warn('clearPasskey failed', e); }
+                try {
+                  if (deleteUserFlo) await deleteUserFlo();
+                } catch (e) { console.warn('deleteUserFlo failed', e); }
+
+                // Remove flo and pfp directories entirely
+                try { await FileSystem.deleteAsync(`${FileSystem.documentDirectory}flo`, { idempotent: true }); } catch (e) { /* ignore */ }
+                try { await FileSystem.deleteAsync(`${FileSystem.documentDirectory}pfp`, { idempotent: true }); } catch (e) { /* ignore */ }
+
+                // Sign out server side (best-effort)
+                try { await supabase.auth.signOut(); } catch (e) { console.warn('supabase.signOut failed', e); }
+
+                // Clear runtime context
+                try { setUserProfile(null); } catch (e) { /* ignore */ }
+                try { setIsLocalProfile(false); } catch (e) { /* ignore */ }
+
+                // Navigate to login
                 router.replace('/(tabs)/ign-LoginScreen' as any);
               }}
             />
@@ -1349,7 +1449,7 @@ const getThemedStyles = (isDark: boolean) => StyleSheet.create({
   },
   imageContainer: { 
   alignItems: 'center', 
-  marginBottom: 8,
+  marginBottom: 17,
     position: 'relative',
     width: SIZES.avatarSize,
     height: SIZES.avatarSize,
@@ -1407,6 +1507,22 @@ const getThemedStyles = (isDark: boolean) => StyleSheet.create({
     },
     shadowOpacity: 0.25,
     shadowRadius: 3.84,
+  },
+  networkDot: {
+    position: 'absolute',
+    right: -6,
+    top: -6,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    borderWidth: 2,
+    borderColor: isDark ? '#0A1E1C' : '#F7FFFC',
+  },
+  dotOnline: {
+    backgroundColor: '#4DCDC2',
+  },
+  dotOffline: {
+    backgroundColor: '#9CA3AF',
   },
   lockButton: {
   marginLeft: 8,

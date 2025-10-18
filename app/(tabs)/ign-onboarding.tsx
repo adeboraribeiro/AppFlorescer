@@ -15,14 +15,17 @@ import {
   TouchableWithoutFeedback,
   View
 } from 'react-native';
-import Svg, { Circle } from 'react-native-svg';
+import Svg, { Circle, G, Text as SvgText } from 'react-native-svg';
 import { useAuth } from '../../contexts/AuthContext';
 import { useUser } from '../../contexts/UserContext';
 // plan export removed: exporter logic intentionally disabled to avoid bundling/auto-export
 import Providers from '@/components/Providers';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as FileSystem from 'expo-file-system';
 import { clearSelectedPlans, exportSelectedPlans } from '../../components/planexport';
+import { useSafeUserData } from '../../components/SafeUserDataProvider';
 import { useTheme } from '../../contexts/ThemeContext';
+import { supabase } from '../../lib/supabase';
 
 export default function Onboarding() {
   const router = useRouter();
@@ -33,21 +36,63 @@ export default function Onboarding() {
   const openedFromLogin = fromParam === 'login' || fromParam === 'LoginScreen';
   // Redirect guard: if an authenticated session exists, onboarding should not render.
   const { user: authUser, session: authSession, loading: authLoading } = useAuth();
-  const { loading: userLoading } = useUser();
+  const { userProfile, loading: userLoading } = useUser();
+  const safe = useSafeUserData();
 
   useEffect(() => {
     // Wait until auth/user loading settles. If a session or authenticated
-    // user is present, send them straight to the home route and do not render
-    // onboarding.
+    // user is present and the runtime profile is complete, send them straight
+    // to the home route and do not render onboarding. If the profile is
+    // incomplete, allow onboarding to render so the user can finish setup.
     if (authLoading || userLoading) return;
     if (authSession || authUser) {
-      try {
-        router.replace('/(tabs)/home' as any);
-      } catch (e) {
-        // ignore navigation errors
+      const profileComplete = !!(userProfile && userProfile.firstName && userProfile.birthDate && userProfile.username);
+      if (profileComplete) {
+        try {
+          router.replace('/(tabs)/home' as any);
+        } catch (e) {
+          // ignore navigation errors
+        }
       }
+      // otherwise don't redirect — let the onboarding flow continue so the
+      // user can complete their profile (avoids an infinite redirect loop).
     }
   }, [authLoading, userLoading, authSession, authUser, router]);
+
+  // If onboarding is shown for an unauthenticated flow, ensure we nuke any
+  // locally-stored credentials and passkeys as a best-effort security measure.
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        // Only run if there is no active auth session/user
+        if (authSession || authUser) return;
+        // Best-effort: call provider helpers to delete local pfp, credentials, passkey and flo
+        try {
+          if (safe?.deleteLocalPfp) await safe.deleteLocalPfp();
+        } catch (e) { /* ignore */ }
+        try {
+          if (safe?.deleteCredentialsFromSecureStore) await safe.deleteCredentialsFromSecureStore();
+        } catch (e) { /* ignore */ }
+        try {
+          if (safe?.clearPasskey) await safe.clearPasskey();
+        } catch (e) { /* ignore */ }
+        try {
+          if (safe?.deleteUserFlo) await safe.deleteUserFlo();
+        } catch (e) { /* ignore */ }
+
+        // Remove flo and pfp directories entirely (idempotent)
+        try { await FileSystem.deleteAsync(`${FileSystem.documentDirectory}flo`, { idempotent: true }); } catch (e) { /* ignore */ }
+        try { await FileSystem.deleteAsync(`${FileSystem.documentDirectory}pfp`, { idempotent: true }); } catch (e) { /* ignore */ }
+
+        // Sign out server-side just in case (best-effort)
+        try { await supabase.auth.signOut(); } catch (e) { /* ignore */ }
+      } catch (e) {
+        // ignore all errors — this is best-effort cleanup
+      }
+    })();
+    return () => { mounted = false; };
+  }, [authSession, authUser, safe]);
   // Termination guard: when onboarding was opened from the login screen we
   // may end up with duplicated work if the user navigates back-and-forth.
   // Schedule a short-lived termination after navigating to login to stop
@@ -942,26 +987,26 @@ export default function Onboarding() {
     { code: 'en', name: 'English' },
   ], []);
 
-  // Memoized components
-  const Logo = useMemo(() => ({ width = 75, height = 75 }: { width?: number; height?: number }) => (
-    // Center the flower within the provided width/height using xMidYMid
-    <Svg width={width} height={height} viewBox="-35 -35 70 70" preserveAspectRatio="xMidYMid meet">
-      {/* White circle background with outline */}
-      <Circle cx="0" cy="0" r="33" fill="#FFFFFF" stroke="#4dccc1" strokeWidth={2} />
-
-      {/* Petals */}
-      <Circle cx="0" cy="-20" r="8" fill={svgColors.petals[0]} />
-      <Circle cx="17" cy="-10" r="8" fill={svgColors.petals[1]} />
-      <Circle cx="17" cy="10" r="8" fill={svgColors.petals[2]} />
-      <Circle cx="0" cy="20" r="8" fill={svgColors.petals[3]} />
-      <Circle cx="-17" cy="10" r="8" fill={svgColors.petals[4]} />
-      <Circle cx="-17" cy="-10" r="8" fill={svgColors.petals[5]} />
-
-      {/* Center */}
-      <Circle cx="0" cy="0" r="6" fill={svgColors.center} />
-    </Svg>
-  ), [svgColors]);
-  // Logo component
+ // Memoized components
+   const Logo = useMemo(() => ({ width = 340, height = 102 }: { width?: number; height?: number }) => (
+     <Svg width={width} height={height} viewBox="0 0 500 150" preserveAspectRatio="xMidYMid meet">
+       <G transform="translate(129,75)">
+         <Circle cx="0" cy="-20" r="8" fill={svgColors.petals[0]} />
+         <Circle cx="17" cy="-10" r="8" fill={svgColors.petals[1]} />
+         <Circle cx="17" cy="10" r="8" fill={svgColors.petals[2]} />
+         <Circle cx="0" cy="20" r="8" fill={svgColors.petals[3]} />
+         <Circle cx="-17" cy="10" r="8" fill={svgColors.petals[4]} />
+         <Circle cx="-17" cy="-10" r="8" fill={svgColors.petals[5]} />
+         <Circle cx="0" cy="0" r="6" fill={svgColors.center} />
+       </G>
+       <G>
+         <SvgText x="179" y="93" fontFamily="system-ui, -apple-system, sans-serif" fontSize="52" fontWeight="900" fill={svgColors.text}>
+           Florescer
+         </SvgText>
+       </G>
+     </Svg>
+   ), [svgColors]);
+   // Logo component
 
   const ChoiceOption = useMemo(() => ({ icon, title, description }: { 
     icon: React.ComponentProps<typeof Ionicons>['name']; 
@@ -1124,7 +1169,7 @@ export default function Onboarding() {
           {/* Step 1: Primary choice */}
           <View style={{ width: size.width, height: size.height, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
             <View style={{ alignItems: 'center', width: '100%' }}>
-              <View style={{ alignItems: 'center', marginBottom: 45 }}>
+              <View style={{ alignItems: 'center', marginBottom: 15 }}>
                 <Logo />
               </View>
               
@@ -1284,7 +1329,7 @@ export default function Onboarding() {
           <View style={{ width: size.width, height: size.height, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
             <View style={{ alignItems: 'center', width: '100%' }}>
               {/* Logo for step 2: sits 15px above the heading */}
-              <View style={{ alignItems: 'center', marginBottom: 45 }}>
+              <View style={{ alignItems: 'center', marginBottom: 15 }}>
                 <Logo />
               </View>
               

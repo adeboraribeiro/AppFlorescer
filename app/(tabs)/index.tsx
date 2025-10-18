@@ -1,8 +1,10 @@
 import Providers from '@/components/Providers';
+import * as FileSystem from 'expo-file-system';
 import { useRouter, useSegments } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Animated, Dimensions, StyleSheet } from 'react-native';
 import Svg, { Circle, G, Path, Rect, Text } from 'react-native-svg';
+import { useSafeUserData } from '../../components/SafeUserDataProvider';
 import { useAuth } from '../../contexts/AuthContext';
 import { useUser } from '../../contexts/UserContext';
 import { ensureSupabaseConnected } from '../../lib/supabase';
@@ -14,7 +16,9 @@ export default function splash() {
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
   const { fetchUserProfile, loading: userLoading, needsOnboarding } = useUser();
+  const { savePfpToLocal, getCredentialsFromSecureStore } = useSafeUserData();
   const [done, setDone] = useState(false);
+  const sequenceLockRef = useRef<boolean>(false);
   const segments = useSegments();
   const [targetRoute, setTargetRoute] = useState<'ign' | 'home' | null>(null);
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -33,81 +37,74 @@ export default function splash() {
   useEffect(() => {
     let mounted = true;
     
-    async function prepare() {
+  async function prepare() {
       try {
+        // Acquire a sequence lock so nothing interrupts the splash animation
+        sequenceLockRef.current = true;
         // Start fetching user profile immediately if we have a user
-        const profilePromise = user ? fetchUserProfile() : Promise.resolve();
-        // Warm an ephemeral session decryption if available: try to activate
-        // an in-memory passkey and perform a lightweight decrypt of 'journal'.
-        try {
-          // Import provider lazily to avoid cyclic imports at module load
-          const { default: SafeUserDataProvider, useSafeUserData } = await Promise.resolve().then(() => require('../../components/SafeUserDataProvider'));
-          // useSafeUserData is a hook and cannot be used here; instead call into the provider via a separate module if available.
-          // NOTE: we cannot safely call hooks from non-component code; skip warming here to avoid runtime errors.
-        } catch (e) {
-          // ignore; warming not performed
-        }
-        
+    const profilePromise = user ? fetchUserProfile() : Promise.resolve();
         // Attempt to ensure the Supabase connection when splash is shown.
-        // Run reconnect in parallel but don't block animations for too long.
         const reconnectPromise = ensureSupabaseConnected();
-        
-        // Allow reconnect attempt to run a short while in parallel with the splash animation
-        await Promise.race([reconnectPromise, new Promise(resolve => setTimeout(resolve, 500))]);
 
-        // Start fetching profile if authenticated, but do NOT wait for it beyond
-        // the animation duration. All fetching should occur during the animation.
-        const animationDurationMs = 4800;
-        // profilePromise already started above; don't await it here so navigation
-        // happens right after the fade.
-        void profilePromise;
+        // Run background tasks and allow them to stretch the splash if needed
+        const tasks = [reconnectPromise, profilePromise];
+        const minDurationMs = 4800;
+        const startTime = Date.now();
 
-        // Wait only for the animation duration
-        await new Promise(resolve => setTimeout(resolve, animationDurationMs));
+        // Wait for background tasks to settle but do not throw on failures
+        await Promise.allSettled(tasks);
 
-        // Fade out animation (300ms)
-        Animated.parallel([
-          Animated.timing(fadeAnim, {
-            toValue: 0,
-            duration: 300,
-            useNativeDriver: true,
-          }),
-          Animated.timing(footerFadeAnim, {
-            toValue: 0,
-            duration: 300,
-            useNativeDriver: true,
-          })
-        ]).start();
+        // Ensure minimum animation duration
+        const elapsed = Date.now() - startTime;
+        if (elapsed < minDurationMs) await new Promise(r => setTimeout(r, minDurationMs - elapsed));
 
-        // Immediately trigger navigation and hide the splash to avoid a long
-        // white-screen pause after the animation completes.
-        if (mounted) {
-          try {
-            if (user) {
-              router.replace('/(tabs)/home' as any);
-            } else {
-              router.replace('/ign-onboarding' as any);
+        // Best-effort: persist remote profile image locally if none exists
+        try {
+          if (user && savePfpToLocal) {
+            let creds: any = null;
+            try { creds = getCredentialsFromSecureStore ? await getCredentialsFromSecureStore() : null; } catch (e) { creds = null; }
+            const remote = (creds && (creds.profileImage || creds.profile_image || creds.pfp)) ?? null;
+            if (remote && typeof remote === 'string' && (remote.startsWith('http://') || remote.startsWith('https://'))) {
+              let localPath: string | null = null;
+              try { const list = await FileSystem.readDirectoryAsync(FileSystem.documentDirectory + 'pfp').catch(() => []); if (Array.isArray(list) && list.length > 0) localPath = `${FileSystem.documentDirectory}pfp/${list[0]}`; } catch (e) { localPath = null; }
+              if (!localPath) { try { await savePfpToLocal(remote); } catch (e) { /* ignore */ } }
             }
-          } finally {
-            // Hide splash now; the layout may briefly re-render but this
-            // prevents an extended white screen.
-            setDone(true);
-            return;
           }
-        }
+        } catch (e) { /* ignore */ }
+
+        // Now fade out animation (300ms) and navigate afterwards. Keep lock until animation completes.
+        Animated.parallel([
+          Animated.timing(fadeAnim, { toValue: 0, duration: 300, useNativeDriver: true }),
+          Animated.timing(footerFadeAnim, { toValue: 0, duration: 300, useNativeDriver: true }),
+        ]).start(() => {
+          sequenceLockRef.current = false;
+          if (mounted) {
+            try {
+              if (user) router.replace('/(tabs)/home' as any);
+              else router.replace('/ign-onboarding' as any);
+            } finally {
+              setDone(true);
+            }
+          }
+        });
       } catch (error) {
         console.error('Error preparing app:', error);
-        if (mounted) {
-          try {
-            if (user) {
-              router.replace('/(tabs)/home' as any);
-            } else {
-              router.replace('/ign-onboarding' as any);
+        // Ensure we still run the fade animation and navigate, releasing the lock afterwards.
+        try {
+          Animated.parallel([
+            Animated.timing(fadeAnim, { toValue: 0, duration: 300, useNativeDriver: true }),
+            Animated.timing(footerFadeAnim, { toValue: 0, duration: 300, useNativeDriver: true }),
+          ]).start(() => {
+            sequenceLockRef.current = false;
+            if (mounted) {
+              try {
+                if (user) router.replace('/(tabs)/home' as any);
+                else router.replace('/ign-onboarding' as any);
+              } finally { setDone(true); }
             }
-          } finally {
-            setDone(true);
-            return;
-          }
+          });
+        } catch (e) {
+          if (mounted) { try { if (user) router.replace('/(tabs)/home' as any); else router.replace('/ign-onboarding' as any); } finally { setDone(true); } }
         }
       }
     }
@@ -190,13 +187,13 @@ export default function splash() {
         const segStrings = Array.isArray(segments) ? segments.map(s => String(s)) : [];
         if (targetRoute === 'ign') {
           if (segStrings.some(s => s.startsWith('ign-'))) {
-            setDone(true);
+            if (!sequenceLockRef.current) setDone(true);
             setTargetRoute(null);
           }
         } else if (targetRoute === 'home') {
           // root index may show as empty segments or contain 'index'
           if (segStrings.length === 0 || segStrings.includes('home')) {
-            setDone(true);
+            if (!sequenceLockRef.current) setDone(true);
             setTargetRoute(null);
           }
         }

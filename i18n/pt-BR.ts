@@ -113,6 +113,10 @@ export default {
       update_failed: 'Falha ao atualizar o perfil',
       update_failed_generic: 'Falha ao atualizar seu perfil',
   failed_something: 'Algo deu errado. Por favor, tente novamente mais tarde.',
+  offline_edit_disabled: 'Edição desabilitada enquanto estiver offline.',
+  offline_action_disabled: 'Esta ação está desabilitada enquanto estiver offline.',
+  offline_image_disabled: 'Envio de imagens desabilitado enquanto estiver offline.',
+  offline_logout_disabled: 'Sair está desabilitado enquanto estiver offline.',
       generic_image_error: 'Ocorreu um erro ao processar a imagem'
     }
     ,

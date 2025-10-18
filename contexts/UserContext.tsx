@@ -1,9 +1,9 @@
 import React, { createContext, ReactNode, useCallback, useContext, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+// NetworkHealth removed: rely on device-level NetInfo and explicit server checks
+import { useSafeUserData } from '../components/SafeUserDataProvider';
 import { supabase } from '../lib/supabase';
 import { useTheme } from './ThemeContext';
-
-// NO IMPORTS TO PLANEXPORT OR ASYNCSTORAGE AT ALL
 
 type UserProfile = {
   firstName: string;
@@ -28,6 +28,9 @@ type UserProfile = {
 type UserContextType = {
   userProfile: UserProfile | null;
   setUserProfile: (profile: UserProfile | null) => void;
+  // true when the runtime profile was populated from local SecureStore fallback
+  isLocalProfile: boolean;
+  setIsLocalProfile: (v: boolean) => void;
   fetchUserProfile: () => Promise<void>;
   fetchStreak: () => Promise<void>;
   triggerStreak: () => Promise<void>;
@@ -40,13 +43,35 @@ const UserContext = createContext<UserContextType | undefined>(undefined);
 
 export function UserProvider({ children }: { children: ReactNode }) {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [isLocalProfile, setIsLocalProfile] = useState(false);
   const [loading, setLoading] = useState(true);
   const [needsOnboarding, setNeedsOnboarding] = useState(true);
   const { i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
 
+  const { getCredentialsFromSecureStore, getUserProfile } = useSafeUserData();
+
+  // Determine whether a local profile object is sufficiently complete to be
+  // considered a usable 'local profile'. We require a non-empty firstName as
+  // the primary mandatory field. Also require an explicit theme and a birthDate
+  // to avoid treating partially-initialized or malformed local blobs as valid.
+  // Assumption: lastName is optional. If these requirements are too strict we
+  // can relax them later, but being conservative prevents false-positive local
+  // sessions when stored creds were wiped.
+  function isValidLocalProfile(p: any | null | undefined): boolean {
+    if (!p) return false;
+    const first = (p.firstName ?? p.first_name ?? '').toString().trim();
+    if (!first) return false;
+    const birth = (p.birthDate ?? p.birth_date ?? null);
+    if (!birth) return false;
+    const themeVal = (p.apptheme ?? p.apptheme ?? p.theme ?? null);
+    if (!themeVal) return false;
+    // allow either 'light' or 'dark' or other truthy values
+    return true;
+  }
+
   const fetchUserProfile = useCallback(async (): Promise<void> => {
-    try {
+  try {
       setLoading(true);
       const { data: { user } } = await supabase.auth.getUser();
       
@@ -55,21 +80,49 @@ export function UserProvider({ children }: { children: ReactNode }) {
         // The database was recently cleaned and many legacy columns may be missing;
         // requesting unknown columns causes PostgREST schema errors. Select only
         // columns we know exist so the client remains robust.
-        const { data: profile } = await supabase
+        const { data: profile, error: profileError } = await supabase
           .from('profiles')
           .select('first_name, last_name, username, birth_date, profile_image, applanguage, apptheme, selectedmodules, onboarding_completed, id, updated_at')
           .eq('id', user.id)
           .single();
 
+        // If server profile missing or errored, try offline encrypted profile
+        // Prefer credentials stored in SecureStore (never fall back to writing/reading
+        // credentials from the .flo file). If the server profile is missing, try
+        // reading credentials from SecureStore.
+        let resolvedProfile: any = profile ?? null;
+        if (profileError || !resolvedProfile) {
+          try {
+            const creds = getCredentialsFromSecureStore ? await (async () => { try { return await getCredentialsFromSecureStore(); } catch { return null; } })() : null;
+            if (creds) {
+              resolvedProfile = {
+                first_name: creds.firstName ?? creds.first_name ?? '',
+                last_name: creds.lastName ?? creds.last_name ?? null,
+                username: creds.username ?? null,
+                birth_date: creds.birthDate ?? creds.birth_date ?? null,
+                profile_image: creds.profileImage ?? creds.profile_image ?? null,
+                applanguage: creds.applanguage ?? creds.language ?? null,
+                apptheme: creds.apptheme ?? creds.apptheme ?? null,
+                selectedmodules: creds.selectedModules ?? creds.selectedmodules ?? null,
+                onboarding_completed: creds.onboardingCompleted ?? creds.onboarding_completed ?? false,
+                id: user.id,
+              };
+            }
+          } catch (e) {
+            console.warn('Offline fallback getCredentialsFromSecureStore failed:', e);
+          }
+        }
+
         // Normalize persisted selected module ids to number[] for runtime use
-        const selectedModules: number[] = Array.isArray(profile?.selectedmodules)
-          ? profile.selectedmodules
+        const rawSelected = resolvedProfile?.selectedmodules ?? resolvedProfile?.selectedModules;
+        const selectedModules: number[] = Array.isArray(rawSelected)
+          ? rawSelected
               .map((v: any) => (typeof v === 'number' ? v : Number(v)))
               .filter((n: number) => Number.isFinite(n))
           : [];
 
-        // SIMPLE ONBOARDING CHECK - NO PLAN EXPORTER LOGIC HERE
-        const onboardingCompletedFlag = !!profile?.onboarding_completed;
+  // SIMPLE ONBOARDING CHECK - NO PLAN EXPORTER LOGIC HERE
+  const onboardingCompletedFlag = !!resolvedProfile?.onboarding_completed;
         const hasServerFeatures = selectedModules.length > 0;
 
         // Set needs onboarding based ONLY on server state
@@ -88,15 +141,15 @@ export function UserProvider({ children }: { children: ReactNode }) {
           streakRow = s;
         } catch (e) {
           // Non-fatal: if the table or row doesn't exist yet, continue with defaults
-+          console.warn('Failed to read streaks row for user:', e);
+          console.warn('Failed to read streaks row for user:', e);
         }
 
-        const userData: UserProfile = {
-          firstName: profile?.first_name || '',
-          lastName: profile?.last_name || null,
-          username: profile?.username || null,
-          birthDate: profile?.birth_date || null,
-          profileImage: profile?.profile_image ?? null,
+  const userData: UserProfile = {
+          firstName: resolvedProfile?.first_name || '',
+          lastName: resolvedProfile?.last_name || null,
+          username: resolvedProfile?.username ?? null,
+          birthDate: resolvedProfile?.birth_date ?? null,
+          profileImage: resolvedProfile?.profile_image ?? null,
           partnerId: null,
           partnerName: null,
           currentStreak: typeof streakRow?.current_streak === 'number' ? streakRow.current_streak : 0,
@@ -104,12 +157,14 @@ export function UserProvider({ children }: { children: ReactNode }) {
           lastCheckinDate: streakRow?.last_triggered_date ?? null,
           lastCheckinAt: null,
           streakStartedDate: streakRow?.started_at ? String(streakRow.started_at) : null,
-          applanguage: profile?.applanguage ?? null,
-          apptheme: profile?.apptheme ?? null,
+          applanguage: resolvedProfile?.applanguage ?? null,
+          apptheme: resolvedProfile?.apptheme ?? null,
           selectedModules,
-          onboardingCompleted: !!profile?.onboarding_completed,
+          onboardingCompleted: !!resolvedProfile?.onboarding_completed,
         };
-        setUserProfile(userData);
+  setUserProfile(userData);
+  // Server profile loaded successfully -> not a local-only profile
+  try { setIsLocalProfile(false); } catch (e) { /* ignore */ }
 
         // Apply persisted preferences if available
         try {
@@ -134,6 +189,42 @@ export function UserProvider({ children }: { children: ReactNode }) {
       }
     } catch (error) {
       console.error('Error fetching user profile:', error);
+      // If any network call fails (auth/profile/streaks), try best-effort to load
+      // the locally persisted encrypted userinfo so the app remains usable offline.
+      try {
+        const local = getCredentialsFromSecureStore ? await getCredentialsFromSecureStore() : await getUserProfile();
+  if (local) {
+          const mappedLocal: UserProfile = {
+            firstName: local.firstName ?? local.first_name ?? '',
+            lastName: local.lastName ?? local.last_name ?? null,
+            username: local.username ?? null,
+            birthDate: local.birthDate ?? local.birth_date ?? null,
+            profileImage: local.profileImage ?? local.profile_image ?? null,
+            partnerId: null,
+            partnerName: null,
+            currentStreak: 0,
+            longestStreak: 0,
+            lastCheckinDate: null,
+            lastCheckinAt: null,
+            streakStartedDate: null,
+            applanguage: local.applanguage ?? local.language ?? null,
+            apptheme: local.apptheme ?? local.apptheme ?? null,
+            selectedModules: Array.isArray(local.selectedModules) ? local.selectedModules.map((v: any) => (typeof v === 'number' ? v : Number(v))).filter((n: number) => Number.isFinite(n)) : [],
+            onboardingCompleted: !!(local.onboardingCompleted ?? local.onboarding_completed),
+          };
+          setUserProfile(mappedLocal);
+          // We loaded a local fallback due to network failure -> mark as local
+          // only if the mapped profile meets our minimal validity checks.
+          try {
+            setIsLocalProfile(isValidLocalProfile(mappedLocal));
+          } catch (e) { /* ignore */ }
+          // Apply language/theme from local profile if present
+          try { if (mappedLocal.applanguage && mappedLocal.applanguage !== i18n.language) { void i18n.changeLanguage(mappedLocal.applanguage); } } catch (e) { /* ignore */ }
+          try { if (mappedLocal.apptheme && mappedLocal.apptheme !== theme && typeof setTheme === 'function') { const desired = (mappedLocal.apptheme === 'light' ? 'light' : 'dark'); setTheme(desired); } } catch (e) { /* ignore */ }
+        }
+      } catch (e) {
+        console.warn('Offline fallback (catch) getUserProfile failed:', e);
+      }
     } finally {
       setLoading(false);
     }
@@ -193,11 +284,14 @@ export function UserProvider({ children }: { children: ReactNode }) {
   }, [fetchUserProfile]);
 
   useEffect(() => {
-    void fetchUserProfile();
+  // Trigger an initial profile fetch. If it fails, fetchUserProfile will
+  // try local fallbacks and mark the runtime as local when appropriate.
+  void fetchUserProfile();
+  return () => {};
   }, []);
 
   return (
-    <UserContext.Provider value={{ userProfile, setUserProfile, fetchUserProfile, fetchStreak, triggerStreak, loading, needsOnboarding, setNeedsOnboarding }}>
+    <UserContext.Provider value={{ userProfile, setUserProfile, isLocalProfile, setIsLocalProfile, fetchUserProfile, fetchStreak, triggerStreak, loading, needsOnboarding, setNeedsOnboarding }}>
       {children}
     </UserContext.Provider>
   );
@@ -217,6 +311,8 @@ export function useUser() {
     return {
       userProfile: null,
       setUserProfile: () => {},
+  isLocalProfile: false,
+  setIsLocalProfile: () => {},
       fetchUserProfile: noopAsync,
       fetchStreak: noopAsync,
       triggerStreak: noopAsync,

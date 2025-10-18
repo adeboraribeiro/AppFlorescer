@@ -13,7 +13,9 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+// removed useSafeUserData import (offline splash removed)
 import { useSettings } from '../../contexts/SettingsContext';
+import { useRouter, useSegments } from 'expo-router';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useUser } from '../../contexts/UserContext';
 
@@ -220,7 +222,10 @@ const DailyCheckIn = ({ hasCheckedIn, onCheckIn, isNavigating, shadowFade }: Dai
 
 export default function HomeScreen() {
   const { isSettingsOpen } = useSettings();
-  const { userProfile, fetchUserProfile, loading, triggerStreak } = useUser();
+  const { userProfile, fetchUserProfile, loading, triggerStreak, setUserProfile, isLocalProfile } = useUser();
+  const router = useRouter();
+  const segments = useSegments();
+  const [blockingRedirect, setBlockingRedirect] = React.useState(false);
   const { t } = useTranslation();
   const { theme } = useTheme();
   const isDarkMode = theme === 'dark';
@@ -235,7 +240,9 @@ export default function HomeScreen() {
   const [longestStreak, setLongestStreak] = useState(0);
   const [loadingCheckin, setLoadingCheckin] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  
   const [isNavigating, setIsNavigating] = useState(false);
+  // offline helpers removed
 
   // Animation values for different elements (slide-in from right)
   const { width: windowWidth } = Dimensions.get('window');
@@ -248,6 +255,28 @@ export default function HomeScreen() {
     // rely on UserContext to fetch full profile (including streaks) once at launch
     fetchUserProfile();
   }, [fetchUserProfile, isSettingsOpen]);
+
+  // Enforce onboarding completeness: if required fields are missing, block home and redirect to onboarding
+  React.useEffect(() => {
+    // Required: firstName, birthDate, username
+    const missing = !userProfile || !userProfile.firstName || !userProfile.birthDate || !userProfile.username;
+    // If the current route segments already include the onboarding route, do not redirect
+    const onOnboardingRoute = segments && segments.length > 0 && segments[0].toLowerCase().includes('ign-onboarding');
+    if (missing) {
+      // Avoid double-navigation loops
+      setBlockingRedirect(true);
+      if (!onOnboardingRoute) {
+        try {
+          router.replace('/ign-onboarding' as any);
+        } catch (e) {
+          // fallback: push
+          try { router.push('/ign-onboarding' as any); } catch (e2) { /* ignore */ }
+        }
+      }
+    } else {
+      setBlockingRedirect(false);
+    }
+  }, [userProfile, isLocalProfile, router, segments]);
 
   // Keep local streak state in sync with the shared userProfile loaded at launch
   React.useEffect(() => {
@@ -320,6 +349,8 @@ export default function HomeScreen() {
 
   const { openSettings } = useSettings();
 
+  if (blockingRedirect) return null;
+
   return (
     <View style={styles.container}>
       {/* Full-screen background filler so pageBg covers the entire screen
@@ -339,6 +370,8 @@ export default function HomeScreen() {
           />
         }>
         <Animated.View style={{ transform: [{ translateX: slideAnim }] }}>
+          
+
           <View style={styles.statsGrid}>
           <StatsCard
             icon="calendar"
@@ -374,6 +407,7 @@ export default function HomeScreen() {
            />
         </View>
           <DailyCheckIn hasCheckedIn={hasCheckedIn} onCheckIn={handleCheckIn} isNavigating={isNavigating} shadowFade={shadowFade} />
+          
           {/* Signup redirect removed per request */}
         </Animated.View>
       </ScrollView>
@@ -531,5 +565,8 @@ const styles = StyleSheet.create({
     color: TEXT_COLOR,
     fontSize: 14,
     textDecorationLine: 'underline',
+  },
+  statusRow: {
+    // status badge removed
   },
 });

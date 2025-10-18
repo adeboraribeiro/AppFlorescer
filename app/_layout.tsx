@@ -106,10 +106,12 @@ export default function RootLayout() {
             <ThemedApp>
               <ErrorCatcher label="AuthProvider">
                 <AuthProvider>
-                  <ErrorCatcher label="UserProvider">
-                    <UserProvider>
-                      <ErrorCatcher label="SettingsProvider">
-                        <SafeUserDataProvider initialUserId={userId}>
+                  {/* SafeUserDataProvider must be mounted before UserProvider because
+                      UserProvider calls useSafeUserData during its initialization. */}
+                  <SafeUserDataProvider initialUserId={userId}>
+                    <ErrorCatcher label="UserProvider">
+                      <UserProvider>
+                        <ErrorCatcher label="SettingsProvider">
                           <SettingsProvider>
                               <NavigationContent />
                               {/* Don't mount KeyChecker while the splash is showing inside (tabs).
@@ -125,10 +127,10 @@ export default function RootLayout() {
                               {/* Import locally to avoid circular import issues at module top-level */}
                               {(() => { const SessionWarmer = require('../components/SessionWarmer').default; return <SessionWarmer />; })()}
                             </SettingsProvider>
-                        </SafeUserDataProvider>
-                      </ErrorCatcher>
-                    </UserProvider>
-                  </ErrorCatcher>
+                        </ErrorCatcher>
+                      </UserProvider>
+                    </ErrorCatcher>
+                  </SafeUserDataProvider>
                 </AuthProvider>
               </ErrorCatcher>
             </ThemedApp>

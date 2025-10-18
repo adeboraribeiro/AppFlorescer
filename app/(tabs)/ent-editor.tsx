@@ -19,7 +19,7 @@ export default function EditEntryView() {
   const initialTitle = typeof params.title === 'string' ? decodeURIComponent(params.title) : '';
   const entryNumber = typeof params.number === 'string' ? parseInt(params.number, 10) : 0;
   // Read cached journal entry synchronously to avoid flicker on editor open
-  const { getCachedCategory, sendCreateJournalEntry, sendUpdateJournalEntry, fetchRawFlo, setPasskey, readCategory, writeCategory, clearPasskey, deleteUserFlo, listJournalEntries } = useSafeUserData();
+  const { getCachedCategory, sendCreateJournalEntry, sendUpdateJournalEntry, fetchRawFlo, setPasskey, readCategory, writeCategory, clearPasskey, deleteUserFlo, listJournalEntries, encryptRawFlo, activateSessionPasskey } = useSafeUserData();
   const cachedJournal = getCachedCategory('journal');
   const cachedEntry = entryId ? (cachedJournal && typeof cachedJournal === 'object' ? (cachedJournal as any)[entryId] : undefined) : undefined;
   const [title, setTitle] = useState<string>(cachedEntry?.title ?? initialTitle);
@@ -133,14 +133,29 @@ export default function EditEntryView() {
     try {
       // store passkey in secure store
       await setPasskey(passkeyInput.trim());
-      // read current journal payload (plaintext) and re-write it encrypted
-      const payload = await readCategory('journal');
-      if (!payload) {
-        // nothing to encrypt — warn user
-        setEncStatusMsg(t('journal.nothing_to_encrypt', 'No journal data found to encrypt'));
+      // Atomically convert existing raw .flo into an encrypted blob.
+      // This avoids reading full plaintext entries into AsyncStorage or
+      // persisting intermediate unencrypted objects.
+      try {
+        // @ts-ignore - provider exposes encryptRawFlo
+        if (typeof (await (Promise.resolve() as any)) !== 'undefined') {}
+      } catch (e) {}
+      try {
+        // call provider-level helper to atomically encrypt the raw flo file
+        if (typeof encryptRawFlo === 'function') {
+          await encryptRawFlo(passkeyInput.trim());
+        } else {
+          throw new Error('encryptRawFlo not available');
+        }
+      } catch (e) {
+        // fallback: attempt to use writeCategory as a last resort
+        const payload = await readCategory('journal');
+        if (!payload) {
+          setEncStatusMsg(t('journal.nothing_to_encrypt', 'No journal data found to encrypt'));
+        } else {
+          await writeCategory('journal', payload, passkeyInput.trim());
+        }
       }
-      // writeCategory will encrypt using provided passkey param (or stored one)
-      await writeCategory('journal', payload, passkeyInput.trim());
       // refresh modal state
       const refreshed = await fetchRawFlo(passkeyInput.trim());
       setEncRaw(refreshed.raw);
@@ -580,6 +595,17 @@ export default function EditEntryView() {
               }]}
             />
           </View>
+        </View>
+        {/* Debug-only: Switch Passkey button (does NOT attempt decryption) */}
+        <View style={{ marginTop: 8, alignItems: 'center' }}>
+          <TouchableOpacity
+            onPress={() => {
+              try { DeviceEventEmitter.emit('forceOpenKeyChecker'); } catch (e) { /* ignore */ }
+            }}
+            style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, borderWidth: 1, borderColor: '#FFB86B', backgroundColor: 'rgba(255,184,107,0.06)' }}
+          >
+            <Text style={{ color: '#FFB86B', fontWeight: '700' }}>{t('journal.switch_passkey', 'Switch Passkey (debug)')}</Text>
+          </TouchableOpacity>
         </View>
       </ScrollView>
       <Modal visible={showEncModal} transparent animationType="fade" onRequestClose={() => setShowEncModal(false)}>

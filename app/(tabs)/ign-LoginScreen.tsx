@@ -773,6 +773,12 @@ export default function LoginScreen() {
 
     // For login form, check if email/username and password are provided
     if (!isSignup) {
+      // Mark login fields as touched so per-field validation UI appears
+      try {
+        touchedRef.current.login.email = true;
+        touchedRef.current.login.password = true;
+      } catch (e) {}
+
       const emailOrUsername = (committedForm.email_login || '').trim();
       // For login, we only check if the field has at least 3 characters
       const errors = {
@@ -781,9 +787,11 @@ export default function LoginScreen() {
       };
       setFieldErrors(prev => ({ ...prev, ...errors }));
 
+      // Keep existing notification behavior but do not short-circuit
+      // before setting all field errors — allow both error flags to be set
       if (errors.email) {
-        showNotification(emailOrUsername.length === 0 ? 
-          t('auth.errors.login_email_required') : 
+        showNotification(emailOrUsername.length === 0 ?
+          t('auth.errors.login_email_required') :
           t('auth.errors.username_too_short'), 'error');
         return;
       }
@@ -819,6 +827,12 @@ export default function LoginScreen() {
         plansMissing = true;
         setPlansInvalid(true);
       }
+
+      // Mark signup fields as touched so per-field validation UI appears
+      try {
+        const s = touchedRef.current.signup;
+        s.name = true; s.lastName = true; s.birthdate = true; s.email = true; s.username = true; s.password = true; s.confirmPassword = true;
+      } catch (e) {}
 
       // Reset all field errors using the committed snapshot
       const errors = {
@@ -1612,9 +1626,14 @@ export default function LoginScreen() {
           <TouchableOpacity
             style={[styles.button, loading && styles.buttonDisabled]}
             onPress={handleSubmit}
+            onPressIn={() => { /* visual feedback could go here */ }}
+            onPressOut={() => { /* visual feedback end */ }}
             disabled={loading}
             accessibilityRole="button"
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            activeOpacity={0.88}
+            delayPressIn={0}
+            pressRetentionOffset={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
             <Text style={styles.buttonText}>{loading ? t('auth.status.loading') : signupMode ? t('auth.buttons.signup') : t('auth.buttons.login')}</Text>
           </TouchableOpacity>

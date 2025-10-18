@@ -3,7 +3,7 @@ import { BlurView } from 'expo-blur';
 import { useSegments } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Alert, Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, DeviceEventEmitter, Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useTheme } from '../contexts/ThemeContext';
 import { useSafeUserData } from './SafeUserDataProvider';
 
@@ -66,6 +66,16 @@ export default function KeyChecker() {
     })();
     return () => { mounted = false; };
   }, [getPasskeyExists, segments, userId]);
+
+  // Listen for external requests to force-open the KeyChecker modal (debug)
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('forceOpenKeyChecker', () => {
+      try {
+        setShowModal(true);
+      } catch (e) { /* ignore */ }
+    });
+    return () => { try { sub.remove(); } catch (e) { /* ignore */ } };
+  }, []);
 
   const onSave = async () => {
     const v = passkeyInput.trim();

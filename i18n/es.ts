@@ -117,6 +117,10 @@ export default {
       update_failed: 'Error al actualizar el perfil',
       update_failed_generic: 'Error al actualizar tu perfil',
   failed_something: 'Algo salió mal. Por favor, inténtalo de nuevo más tarde.',
+  offline_edit_disabled: 'La edición está deshabilitada mientras esté sin conexión.',
+  offline_action_disabled: 'Esta acción está deshabilitada mientras esté sin conexión.',
+  offline_image_disabled: 'Las cargas de imágenes están deshabilitadas mientras esté sin conexión.',
+  offline_logout_disabled: 'Cerrar sesión está deshabilitado mientras esté sin conexión.',
       generic_image_error: 'Ocurrió un error al procesar la imagen'
     }
   },

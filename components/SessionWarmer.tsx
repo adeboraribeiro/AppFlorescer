@@ -7,13 +7,14 @@ import { useSafeUserData } from './SafeUserDataProvider';
 // quickly but defers heavy cache-warming (readCategory) until after interactions
 // to avoid throttling the splash/animations.
 export default function SessionWarmer() {
-  const { userId, getPasskey, activateSessionPasskey, warmLatestJournalEntries, getUserProfile, saveUserProfile } = useSafeUserData();
-  const { userProfile } = useUser();
+  const { userId, getPasskey, activateSessionPasskey, warmLatestJournalEntries, getUserProfile, saveCredentialsToSecureStore } = useSafeUserData();
+  const { userProfile, setUserProfile, setIsLocalProfile } = useUser();
 
   useEffect(() => {
     if (!userId) return;
 
     let didCancel = false;
+  const { testSupabaseConnection } = require('../lib/supabase');
   let storedPass: string | null = null;
 
     // Activate stored passkey quickly (cheap) so session operations can use it.
@@ -41,18 +42,365 @@ export default function SessionWarmer() {
             if (warmLatestJournalEntries) await warmLatestJournalEntries(15);
             // After warming, also attempt to verify and sync encrypted userinfo with server profile
             try {
-              if (storedPass && userProfile && typeof userProfile === 'object') {
+                if (storedPass) {
                 try {
                   const local = await getUserProfile(storedPass);
+                  // If we have a local encrypted profile and the app doesn't yet have a
+                  // runtime userProfile (or the server profile is missing), apply the
+                  // local profile so the UI can operate offline without needing user input.
+                  if (local && (!userProfile || typeof userProfile !== 'object' || !userProfile.firstName)) {
+                    try {
+                      const mappedLocal = {
+                        firstName: local.firstName ?? local.first_name ?? '',
+                        lastName: local.lastName ?? local.last_name ?? null,
+                        username: local.username ?? null,
+                        birthDate: local.birthDate ?? local.birth_date ?? null,
+                        profileImage: local.profileImage ?? local.profile_image ?? null,
+                        partnerId: null,
+                        partnerName: null,
+                        currentStreak: userProfile?.currentStreak ?? 0,
+                        longestStreak: userProfile?.longestStreak ?? 0,
+                        lastCheckinDate: userProfile?.lastCheckinDate ?? null,
+                        lastCheckinAt: userProfile?.lastCheckinAt ?? null,
+                        streakStartedDate: userProfile?.streakStartedDate ?? null,
+                        applanguage: local.applanguage ?? local.language ?? null,
+                        apptheme: local.apptheme ?? local.apptheme ?? null,
+                        selectedModules: Array.isArray(local.selectedModules) ? local.selectedModules.map((v: any) => (typeof v === 'number' ? v : Number(v))).filter((n: number) => Number.isFinite(n)) : [],
+                        onboardingCompleted: !!(local.onboardingCompleted ?? local.onboarding_completed),
+                      };
+                      try { setUserProfile(mappedLocal); if (typeof setIsLocalProfile === 'function') setIsLocalProfile(true); } catch (e) { /* ignore */ }
+                    } catch (e) { /* ignore */ }
+                  }
+                  
+                  
+                  
+                  
+                
+                  
+                  
+                  
+                  
+                  
+                  // Continue with the previous server sync logic below
+                
+                  
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                  
+                
+                
+                
+                  
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                  
+                
+                
+                
+                
+                
+                
+                  
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                  
+                
+                
+                
+                
+                
+                
+                
+                  
+                
+                
+                
+                  
+                
+                
+                
+                  
+                
+                
+                  
+                
+                
+                
+                  
+                
+                
+                  
+                
+                
+                
+                
+                
+                
+                  
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                  
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                  
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                  
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
+                
                   const serverBasic = {
-                    firstName: userProfile.firstName ?? '',
-                    lastName: userProfile.lastName ?? null,
-                    username: userProfile.username ?? null,
-                    birthDate: userProfile.birthDate ?? null,
-                    applanguage: userProfile.applanguage ?? null,
-                    apptheme: userProfile.apptheme ?? null,
-                    selectedModules: userProfile.selectedModules ?? undefined,
-                    onboardingCompleted: userProfile.onboardingCompleted ?? undefined,
+                    firstName: userProfile?.firstName ?? '',
+                    lastName: userProfile?.lastName ?? null,
+                    username: userProfile?.username ?? null,
+                    birthDate: userProfile?.birthDate ?? null,
+                    applanguage: userProfile?.applanguage ?? null,
+                    apptheme: userProfile?.apptheme ?? null,
+                    selectedModules: userProfile?.selectedModules ?? undefined,
+                    onboardingCompleted: userProfile?.onboardingCompleted ?? undefined,
                   };
                   const localBasic = local ? {
                     firstName: local.firstName ?? '',
@@ -65,10 +413,12 @@ export default function SessionWarmer() {
                     onboardingCompleted: local.onboardingCompleted ?? undefined,
                   } : null;
 
-                  const changed = !localBasic || JSON.stringify(serverBasic) !== JSON.stringify(localBasic);
-                  if (changed) {
+          const changed = !localBasic || JSON.stringify(serverBasic) !== JSON.stringify(localBasic);
+          // If server profile is present and differs, saving serverBasic means we're using server data
+          if (changed) {
                     try {
-                      await saveUserProfile(serverBasic, storedPass);
+                      if (saveCredentialsToSecureStore) await saveCredentialsToSecureStore(serverBasic);
+            try { if (typeof setIsLocalProfile === 'function') setIsLocalProfile(false); } catch (e) { /* ignore */ }
                     } catch (e) { /* ignore save errors */ }
                   }
                 } catch (e) { /* ignore profile decrypt/compare errors */ }
@@ -87,7 +437,7 @@ export default function SessionWarmer() {
       didCancel = true;
       try { (handle as any)?.cancel && (handle as any).cancel(); } catch (e) {}
     };
-  }, [userId, getPasskey, activateSessionPasskey, warmLatestJournalEntries]);
+  }, [userId, getPasskey, activateSessionPasskey, warmLatestJournalEntries, userProfile, setUserProfile]);
 
   return null;
 }

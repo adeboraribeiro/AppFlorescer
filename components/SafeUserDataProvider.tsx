@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import CryptoJS from 'crypto-js';
 import * as FileSystem from 'expo-file-system';
 import * as SecureStore from 'expo-secure-store';
@@ -51,6 +52,13 @@ type SafeUserDataContextValue = {
   // Encrypted user profile stored inside the .flo under the `userinfo` key
   getUserProfile: (passkey?: string) => Promise<any | null>;
   saveUserProfile: (profile: any, passkey?: string) => Promise<void>;
+  // Helpers to manage a locally-saved profile picture (one file per user)
+  savePfpToLocal?: (remoteUrl: string) => Promise<string | null>;
+  deleteLocalPfp?: () => Promise<void>;
+  // Basic server-side minimal credentials persisted in SecureStore (NOT in .flo)
+  saveCredentialsToSecureStore?: (profile: any) => Promise<void>;
+  getCredentialsFromSecureStore?: () => Promise<any | null>;
+  deleteCredentialsFromSecureStore?: () => Promise<void>;
   // Activate an in-memory session passkey (kept only while app is foregrounded)
   activateSessionPasskey: (passkey: string) => void;
   clearSessionPasskey: () => void;
@@ -61,6 +69,10 @@ type SafeUserDataContextValue = {
   deleteUserFlo: () => Promise<void>;
   warmLatestJournalEntries?: (count: number) => Promise<void>;
   removeEmptyJournalChunks?: (passkey?: string) => Promise<void>;
+  // Convert existing plaintext .flo into encrypted form
+  encryptRawFlo?: (passkey?: string) => Promise<void>;
+  // Credential helpers stored in SecureStore (non-journal minimal profile)
+  // (implemented above)
 };
 
 const SafeUserDataContext = createContext<SafeUserDataContextValue | undefined>(undefined);
@@ -231,6 +243,12 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
     return `flo-passkey-${uidKey}`;
   };
 
+  const credsStoreKey = (uid?: string) => {
+    const uidKey = uid ?? userId ?? providedUserId;
+    if (!uidKey) return null;
+    return `flo-creds-${uidKey}`;
+  };
+
   async function setPasskey(passkey: string) {
     const key = passkeyStoreKey();
     if (!key) throw new Error('No user set');
@@ -259,6 +277,219 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
     const key = passkeyStoreKey();
     if (!key) throw new Error('No user set');
     await SecureStore.deleteItemAsync(key);
+  }
+
+  // Save basic credentials (non-journal, minimal profile) into SecureStore
+  async function saveCredentialsToSecureStore(profile: any): Promise<void> {
+    const key = credsStoreKey();
+    if (!key) throw new Error('No user set');
+    try {
+      const payload = JSON.stringify(profile ?? {});
+      await SecureStore.setItemAsync(key, payload, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK });
+      // If profile contains a profile image URL, cache it in AsyncStorage (non-secure) for quick PFP loads
+      try {
+        const uid = userId ?? providedUserId;
+        if (uid) {
+          const candidate = profile?.profileImage ?? profile?.profile_image ?? profile?.pfp ?? null;
+          if (candidate) {
+            // If candidate looks like a remote URL, attempt to download and save a single
+            // local copy for offline use. If it's already a local file URI, preserve it.
+            try {
+              if (typeof candidate === 'string' && (candidate.startsWith('http://') || candidate.startsWith('https://'))) {
+                await savePfpToLocal(candidate);
+              } else {
+                const localKey = `@florescer:pfp_local_v1:${uid}`;
+                await AsyncStorage.setItem(localKey, String(candidate));
+              }
+            } catch (e) {
+              console.warn('Failed to persist PFP locally', e);
+              // fallback: save remote URL as cached url key for backward compatibility
+              const pfpKey = `@florescer:pfp_url_v1:${uid}`;
+              await AsyncStorage.setItem(pfpKey, String(candidate));
+            }
+          } else {
+            // remove any existing cached pfp if profile has no image
+            const pfpKey = `@florescer:pfp_url_v1:${uid}`;
+            const localKey = `@florescer:pfp_local_v1:${uid}`;
+            await AsyncStorage.removeItem(pfpKey);
+            await AsyncStorage.removeItem(localKey);
+            // also remove any saved local file
+            try { await deleteLocalPfp(); } catch (e) { /* ignore */ }
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to persist PFP to storage', e);
+      }
+    } catch (e) {
+      console.warn('Failed to save credentials to SecureStore', e);
+      throw e;
+    }
+  }
+
+  async function getCredentialsFromSecureStore(): Promise<any | null> {
+    const key = credsStoreKey();
+    if (!key) throw new Error('No user set');
+    try {
+      const raw = await SecureStore.getItemAsync(key);
+      if (!raw) return null;
+      try { return JSON.parse(raw); } catch (e) { return null; }
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Read credentials from SecureStore and attach cached PFP from AsyncStorage (if available)
+  async function getCredentialsWithCachedPfp(): Promise<any | null> {
+    try {
+      const creds = await getCredentialsFromSecureStore();
+      const uid = userId ?? providedUserId;
+      if (!uid) return creds;
+      // Prefer the local saved PFP path (persisted under pfp_local key). Fall back to
+      // the cached remote URL for backward compatibility.
+      const localKey = `@florescer:pfp_local_v1:${uid}`;
+      const urlKey = `@florescer:pfp_url_v1:${uid}`;
+      try {
+        const local = await AsyncStorage.getItem(localKey);
+        if (local) {
+          if (creds) {
+            if (!creds.profileImage) creds.profileImage = local;
+            if (!creds.profile_image) creds.profile_image = local;
+            if (!creds.pfp) creds.pfp = local;
+            return creds;
+          }
+          return { profileImage: local, profile_image: local, pfp: local };
+        }
+        const cached = await AsyncStorage.getItem(urlKey);
+        if (cached) {
+          if (creds) {
+            if (!creds.profileImage) creds.profileImage = cached;
+            if (!creds.profile_image) creds.profile_image = cached;
+            if (!creds.pfp) creds.pfp = cached;
+            return creds;
+          }
+          return { profileImage: cached, profile_image: cached, pfp: cached };
+        }
+      } catch (e) {
+        // ignore AsyncStorage read failures
+      }
+      return creds;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function deleteCredentialsFromSecureStore(): Promise<void> {
+    const key = credsStoreKey();
+    if (!key) throw new Error('No user set');
+    try { await SecureStore.deleteItemAsync(key); } catch (e) { /* ignore */ }
+    try {
+      const uid = userId ?? providedUserId;
+      if (uid) {
+        const pfpKey = `@florescer:pfp_url_v1:${uid}`;
+        const localKey = `@florescer:pfp_local_v1:${uid}`;
+        await AsyncStorage.removeItem(pfpKey);
+        await AsyncStorage.removeItem(localKey);
+        try { await deleteLocalPfp(); } catch (e) { /* ignore */ }
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  // Helper: derive local file path for user's pfp
+  function localPfpPath(uid?: string, ext = '.jpg') {
+    const u = uid ?? userId ?? providedUserId;
+    if (!u) return null;
+    return `${FileSystem.documentDirectory}pfp/user-${u}${ext}`;
+  }
+
+  // Save a remote image URL to a single local file for this user. Replaces any existing local file.
+  async function savePfpToLocal(remoteUrl: string): Promise<string | null> {
+    const uid = userId ?? providedUserId;
+    if (!uid) throw new Error('No user set');
+    if (!remoteUrl) return null;
+
+    // Try to derive extension from URL, fallback to .jpg
+    let ext = '.jpg';
+    try {
+      const m = remoteUrl.match(/\.([a-zA-Z0-9]{2,5})(?:\?|$)/);
+      if (m && m[1]) ext = `.${m[1].toLowerCase()}`;
+    } catch (e) { /* ignore */ }
+
+    const finalPath = localPfpPath(uid, ext);
+    if (!finalPath) return null;
+
+    // directory path
+    const dir = finalPath.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+    const tmpPath = `${dir}/user-${uid}.tmp`;
+
+    try {
+      // Ensure directory exists
+      try { await FileSystem.makeDirectoryAsync(dir, { intermediates: true }); } catch (e) { /* ignore */ }
+
+      // Download to a temp file first
+      try { await FileSystem.deleteAsync(tmpPath, { idempotent: true }); } catch (e) { /* ignore */ }
+      const { uri: downloadedUri } = await FileSystem.downloadAsync(remoteUrl, tmpPath);
+
+      // Remove any existing files that match user-<id>.* (except the tmp we just created)
+      try {
+        const listing = await FileSystem.readDirectoryAsync(dir);
+        for (const f of listing) {
+          if (f.startsWith(`user-${uid}.`) && !f.endsWith('.tmp')) {
+            try { await FileSystem.deleteAsync(`${dir}/${f}`, { idempotent: true }); } catch (e) { /* ignore */ }
+          }
+        }
+      } catch (e) { /* ignore */ }
+
+      // Move temp to final path (overwrite if necessary)
+      try {
+        // Ensure final doesn't exist
+        try { await FileSystem.deleteAsync(finalPath, { idempotent: true }); } catch (e) { /* ignore */ }
+        await FileSystem.moveAsync({ from: downloadedUri, to: finalPath });
+      } catch (e) {
+        // If move fails, try copy via download (fallback)
+        try { await FileSystem.copyAsync({ from: downloadedUri, to: finalPath }); } catch (e2) { /* ignore */ }
+      }
+
+      const localKey = `@florescer:pfp_local_v1:${uid}`;
+      await AsyncStorage.setItem(localKey, finalPath);
+      return finalPath;
+    } catch (e) {
+      console.warn('Failed to download/save PFP locally', e);
+      // cleanup tmp if exists
+      try { await FileSystem.deleteAsync(tmpPath, { idempotent: true }); } catch (e) { /* ignore */ }
+      return null;
+    }
+  }
+
+  // Delete local pfp file for current user
+  async function deleteLocalPfp(): Promise<void> {
+    const uid = userId ?? providedUserId;
+    if (!uid) return;
+    const localKey = `@florescer:pfp_local_v1:${uid}`;
+    try {
+      // Remove any saved files in the pfp dir matching user-<id>.*
+      const dir = `${FileSystem.documentDirectory}pfp`;
+      try {
+        const exists = await FileSystem.getInfoAsync(dir);
+        if (exists.exists) {
+          const listing = await FileSystem.readDirectoryAsync(dir);
+          for (const f of listing) {
+            if (f.startsWith(`user-${uid}.`)) {
+              try { await FileSystem.deleteAsync(`${dir}/${f}`, { idempotent: true }); } catch (e) { /* ignore */ }
+            }
+          }
+        }
+      } catch (e) { /* ignore */ }
+
+      // Also try deleting the path recorded in AsyncStorage for extra safety
+      try {
+        const existing = await AsyncStorage.getItem(localKey);
+        if (existing) {
+          try { await FileSystem.deleteAsync(existing, { idempotent: true }); } catch (e) { /* ignore */ }
+        }
+      } catch (e) { /* ignore */ }
+
+      await AsyncStorage.removeItem(localKey);
+    } catch (e) { /* ignore */ }
   }
 
   // Returns true if a passkey exists in SecureStore for the current user
@@ -982,78 +1213,67 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
     await saveRaw(finalStore, uid);
   }
 
-  // --- Encrypted user profile helpers stored under `userinfo` in the .flo ---
-  async function getUserProfile(passkey?: string): Promise<any | null> {
+  // Convert an existing plaintext .flo (or a parsed object) into a fully
+  // encrypted store using the provided passkey. This is used when the user
+  // asks to "Encrypt" an unencrypted file. It will replace the on-disk
+  // file with a ciphertext-prefixed blob and update in-memory caches.
+  async function encryptRawFlo(passkey?: string): Promise<void> {
     const uid = userId ?? providedUserId;
     if (!uid) throw new Error('No user set');
 
     const raw = await loadRaw(uid);
-    if (!raw) return null;
+    if (!raw) return;
 
-    let parsed: FloData | null = null;
-    if (typeof raw === 'string' && raw.startsWith(PREFIX)) {
-      const rawPass = await resolveStoredOrProvidedPasskey(uid, passkey as string | undefined);
-      if (!rawPass) throw new Error('Passkey required to decrypt data');
-      const dec = decryptString(raw, uid, rawPass);
-      try { parsed = JSON.parse(dec) as FloData; } catch (e) { return null; }
-    } else {
-      try { parsed = JSON.parse(String(raw)) as FloData; } catch (e) { return null; }
+    // If already encrypted, no-op
+    if (typeof raw === 'string' && raw.startsWith(PREFIX)) return;
+
+    let parsed: FloData = { journal: {} };
+    try {
+      parsed = JSON.parse(String(raw)) as FloData;
+    } catch (e) {
+      // If parsing fails, wrap raw into a journal-less object to avoid data loss
+      parsed = { journal: {} };
     }
 
-    if (!parsed) return null;
-    const val = (parsed as any)['userinfo'];
-    if (!val) return null;
-
-    if (typeof val === 'string' && val.startsWith(PREFIX)) {
-      const rawPass = await resolveStoredOrProvidedPasskey(uid, passkey as string | undefined);
-      if (!rawPass) throw new Error('Passkey required to decrypt data');
-      try {
-        const dec = decryptString(val, uid, rawPass);
-        try { return JSON.parse(dec); } catch (e) { return dec; }
-      } catch (e) { return null; }
-    }
-
-    return val;
-  }
-
-  async function saveUserProfile(profile: any, passkey?: string): Promise<void> {
-    const uid = userId ?? providedUserId;
-    if (!uid) throw new Error('No user set');
-
-    // Load existing
-    const raw = await loadRaw(uid);
-    let data: FloData = { journal: {} };
-
-    if (raw) {
-      if (typeof raw === 'string' && raw.startsWith(PREFIX)) {
-        const effectiveForRead = passkey ?? (await (async () => { try { return await getPasskey(); } catch { return undefined; } })());
-        if (!effectiveForRead) throw new Error('Passkey required to decrypt data');
-        const decrypted = decryptString(raw, uid, effectiveForRead);
-        try { data = JSON.parse(decrypted) as FloData; } catch (e) { data = { journal: {} }; }
-      } else {
-        try { data = JSON.parse(String(raw)) as FloData; } catch (e) { data = { journal: {} }; }
-      }
-    }
-
+    // Determine effective passkey to use for encryption
     let effective: string | undefined = passkey as string | undefined;
     if (!effective) {
       try { const gp = await getPasskey(); if (gp) effective = gp; } catch (e) { /* ignore */ }
     }
+    if (!effective) throw new Error('Passkey required to encrypt data');
 
-    if (effective) {
-      const toEncrypt = JSON.stringify(profile);
-      const encrypted = encryptString(toEncrypt, uid, effective);
-      (data as any)['userinfo'] = encrypted;
-    } else {
-      (data as any)['userinfo'] = profile;
-    }
+    // Ensure we don't accidentally persist a plaintext user id
+    try { delete (parsed as any).user; } catch (e) { /* ignore */ }
 
-    try { delete (data as any).user; } catch (e) { /* ignore */ }
-    const finalStore = JSON.stringify(data);
+    const finalStore = encryptString(JSON.stringify(parsed), uid, effective);
     await saveRaw(finalStore, uid);
 
-    try { parsedFileRef.current = { raw: finalStore, parsed: data }; } catch (e) { /* ignore */ }
-    try { categoryCacheRef.current = categoryCacheRef.current ?? {}; categoryCacheRef.current['userinfo'] = profile; } catch (e) { /* ignore */ }
+    try { parsedFileRef.current = { raw: finalStore, parsed }; } catch (e) { /* ignore */ }
+    try { if (categoryCacheRef.current) delete categoryCacheRef.current['journal']; } catch (e) { /* ignore */ }
+  }
+
+  // --- User profile helpers: DO NOT WRITE credentials into the .flo file.
+  // Credentials are stored only in SecureStore under a per-user key.
+  async function getUserProfile(passkey?: string): Promise<any | null> {
+    // Deprecated: prefer getCredentialsFromSecureStore() which reads from SecureStore.
+    // Keep API backward-compatible by returning credentials from SecureStore only.
+    try {
+  // Return credentials enriched with the cached PFP (if available)
+  const creds = await getCredentialsWithCachedPfp();
+  return creds;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function saveUserProfile(profile: any, passkey?: string): Promise<void> {
+    // Save minimal profile/credentials into SecureStore only. Do NOT write into .flo.
+    try {
+      await saveCredentialsToSecureStore(profile);
+    } catch (e) {
+      console.warn('Failed to save user profile to SecureStore', e);
+      throw e;
+    }
   }
 
   const value: SafeUserDataContextValue = {
@@ -1067,6 +1287,7 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
     readAllJournalChunks,
     warmLatestJournalEntries,
     removeEmptyJournalChunks,
+  encryptRawFlo: async (passkey) => encryptRawFlo(passkey),
     sendCreateJournalEntry: async (input, passkey) => createJournalEntry(input, passkey),
     sendUpdateJournalEntry: async (id, patch, passkey) => updateJournalEntry(id, patch, passkey),
     sendDeleteJournalEntry: async (id, passkey) => deleteJournalEntry(id, passkey),
@@ -1080,6 +1301,14 @@ export const SafeUserDataProvider = ({ children, initialUserId }: { children: Re
     deleteUserFlo: async () => deleteRaw(),
   getUserProfile: async (passkey) => getUserProfile(passkey),
   saveUserProfile: async (profile, passkey) => saveUserProfile(profile, passkey),
+    // credential helpers
+  saveCredentialsToSecureStore: async (profile) => saveCredentialsToSecureStore(profile),
+  // getCredentialsFromSecureStore now returns credentials enriched with any cached PFP from AsyncStorage
+  getCredentialsFromSecureStore: async () => getCredentialsWithCachedPfp(),
+    deleteCredentialsFromSecureStore: async () => deleteCredentialsFromSecureStore(),
+    // local pfp helpers
+  savePfpToLocal: async (url: string) => savePfpToLocal(url),
+  deleteLocalPfp: async () => deleteLocalPfp(),
   };
 
   return <SafeUserDataContext.Provider value={value}>{children}</SafeUserDataContext.Provider>;

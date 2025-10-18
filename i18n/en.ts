@@ -118,6 +118,10 @@ export default {
       update_failed: 'Failed to update profile',
   update_failed_generic: 'Failed to update your profile',
   failed_something: 'Something went wrong. Please try again later.',
+  offline_edit_disabled: 'Editing is disabled while offline.',
+  offline_action_disabled: 'This action is disabled while offline.',
+  offline_image_disabled: 'Image uploads are disabled while offline.',
+  offline_logout_disabled: 'Logout is disabled while offline.',
       generic_image_error: 'An error occurred while processing the image'
     }
     ,

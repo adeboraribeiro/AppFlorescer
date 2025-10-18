@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Session, User } from '@supabase/supabase-js';
+import * as SecureStore from 'expo-secure-store';
 import { createContext, useContext, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Linking } from 'react-native';
@@ -82,9 +83,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (raw) {
             try {
               const parsed = JSON.parse(raw) as Session;
-              // Use persisted session locally but keep loading=false to avoid routing away. Do NOT call supabase to rehydrate here.
-              setState(prev => ({ ...prev, session: parsed, user: parsed.user ?? null, loading: false }));
-              return;
+              // Validate that local credential material still exists for this user
+              // before treating the persisted session as an offline fallback.
+              const uid = parsed?.user?.id;
+              let hasLocalCreds = false;
+              if (uid) {
+                try {
+                  const credKey = `flo-creds-${uid}`;
+                  const passKey = `flo-passkey-${uid}`;
+                  const creds = await SecureStore.getItemAsync(credKey);
+                  const pass = await SecureStore.getItemAsync(passKey);
+                  if (creds || pass) hasLocalCreds = true;
+                  else {
+                    // also check AsyncStorage-cached pfp urls/paths
+                    const pfpLocal = `@florescer:pfp_local_v1:${uid}`;
+                    const pfpUrl = `@florescer:pfp_url_v1:${uid}`;
+                    const pl = await AsyncStorage.getItem(pfpLocal);
+                    const pu = await AsyncStorage.getItem(pfpUrl);
+                    if (pl || pu) hasLocalCreds = true;
+                  }
+                } catch (e) {
+                  // ignore SecureStore read failures and assume no creds
+                  hasLocalCreds = false;
+                }
+              }
+
+              if (hasLocalCreds) {
+                // Use persisted session locally but keep loading=false to avoid routing away.
+                setState(prev => ({ ...prev, session: parsed, user: parsed.user ?? null, loading: false }));
+                return;
+              }
+
+              // No credential material found — clear persisted session to avoid treating
+              // a stale server session as a live authenticated user when credentials were wiped.
+              try { await AsyncStorage.removeItem(LAST_SESSION_KEY); } catch (e) { /* ignore */ }
             } catch (e) {
               // fall through to clear
             }
@@ -93,7 +125,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           console.warn('[Auth] failed to read last session fallback', e);
         }
 
-        // No fallback available: clear state
+        // No valid fallback available: clear state
         setState(prev => ({ ...prev, session: null, user: null, loading: false }));
       }
     );
