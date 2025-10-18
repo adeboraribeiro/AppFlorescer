@@ -22,6 +22,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const { t } = useTranslation();
+  const LAST_SESSION_KEY = '@florescer:last_session_v1';
   const [state, setState] = useState<AuthState>({
     user: null,
     session: null,
@@ -43,6 +44,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             loading: false,
           }));
         }
+        // persist last known session for offline fallback
+        try {
+          if (session) await AsyncStorage.setItem(LAST_SESSION_KEY, JSON.stringify(session));
+        } catch (e) { console.warn('[Auth] failed to persist session', e); }
       } catch (error) {
         console.error('Session check error:', error);
         if (mounted) {
@@ -58,20 +63,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, session) => {
+      async (event, session) => {
         try {
-          // Debug logging to help trace unexpected sign-outs or auth loops
-          // eslint-disable-next-line no-console
           console.log('[Auth] onAuthStateChange', { event, userId: session?.user?.id ?? null, email: session?.user?.email ?? null });
         } catch (e) {}
-        if (mounted) {
-          setState(prev => ({
-            ...prev,
-            session,
-            user: session?.user ?? null,
-            loading: false,
-          }));
+        if (!mounted) return;
+
+        // If session is present, update state and persist it
+        if (session) {
+          setState(prev => ({ ...prev, session, user: session.user ?? null, loading: false }));
+          try { await AsyncStorage.setItem(LAST_SESSION_KEY, JSON.stringify(session)); } catch (e) { console.warn('[Auth] failed to persist session', e); }
+          return;
         }
+
+        // session is null: attempt to read last persisted session and use as offline fallback
+        try {
+          const raw = await AsyncStorage.getItem(LAST_SESSION_KEY);
+          if (raw) {
+            try {
+              const parsed = JSON.parse(raw) as Session;
+              // Use persisted session locally but keep loading=false to avoid routing away. Do NOT call supabase to rehydrate here.
+              setState(prev => ({ ...prev, session: parsed, user: parsed.user ?? null, loading: false }));
+              return;
+            } catch (e) {
+              // fall through to clear
+            }
+          }
+        } catch (e) {
+          console.warn('[Auth] failed to read last session fallback', e);
+        }
+
+        // No fallback available: clear state
+        setState(prev => ({ ...prev, session: null, user: null, loading: false }));
       }
     );
 
@@ -508,8 +531,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     },
     signOut: async () => {
-      const { error } = await supabase.auth.signOut()
-      if (error) throw error
+  const { error } = await supabase.auth.signOut()
+  if (error) throw error
+  try { await AsyncStorage.removeItem(LAST_SESSION_KEY); } catch (e) { /* ignore */ }
     },
   }
 

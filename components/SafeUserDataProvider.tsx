@@ -54,6 +54,8 @@ type SafeUserDataContextValue = {
   // Activate an in-memory session passkey (kept only while app is foregrounded)
   activateSessionPasskey: (passkey: string) => void;
   clearSessionPasskey: () => void;
+  // Rotate the stored passkey by re-encrypting the entire .flo with a new passkey.
+  rotatePasskey: (oldPass: string, newPass: string) => Promise<void>;
   // Read cached category value synchronously (may be undefined/null)
   getCachedCategory: (category: string) => any | null;
   clearPasskey: () => Promise<void>;

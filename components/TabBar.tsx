@@ -18,6 +18,7 @@ export default function TabBarBackground({ isDarkMode = false, enabledModules = 
   const [isNavigating, setIsNavigating] = React.useState(false);
   const navigationTimeout = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const currentRoute = React.useRef<string>('/home'); // Initialize with home route
+  const renderedRoutesRef = React.useRef<Set<string>>(new Set());
   // Sync currentRoute with actual router path to avoid stale state after programmatic navigation
   React.useEffect(() => {
     try {
@@ -27,7 +28,22 @@ export default function TabBarBackground({ isDarkMode = false, enabledModules = 
       // ignore
     }
   }, []);
+
+  // Track which routes have already been rendered so TabBar can avoid re-triggering
+  // entrance animations by re-navigating to the same route.
+  React.useEffect(() => {
+    try {
+      const path = (router && (router as any).pathname) ? (router as any).pathname : undefined;
+      if (path && typeof path === 'string') renderedRoutesRef.current.add(path);
+    } catch (e) { /* ignore */ }
+  }, []);
+
+  // No external emitters: TabBar keeps its own route state and handles home re-clicks internally.
   const CLICK_TIMEOUT = 300; // 300ms timeout between clicks
+  // Home re-click policy: require at least 300ms between allowed re-clicks and no more than 2 re-clicks
+  const homeClickCountRef = React.useRef<number>(0);
+  const lastHomeClickRef = React.useRef<number>(0);
+  const homeClickResetTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Clear timeout on unmount
   React.useEffect(() => {
@@ -35,6 +51,7 @@ export default function TabBarBackground({ isDarkMode = false, enabledModules = 
       if (navigationTimeout.current) {
         clearTimeout(navigationTimeout.current);
       }
+  try { if (homeClickResetTimer.current) clearTimeout(homeClickResetTimer.current); } catch (e) { /* ignore */ }
     };
   }, []);
   // Use the shared i18n instance directly to avoid hook-related runtime issues
@@ -138,8 +155,52 @@ export default function TabBarBackground({ isDarkMode = false, enabledModules = 
                     (slot.type === 'module' && slot.module?.route) ? slot.module.route :
                     null;
 
-                  // If it's the same route or it's the More button when settings are open, do nothing
-            if (targetRoute === currentRoute.current || 
+                  // Special handling: allow Home to be re-clicked but only under our policy
+                  if (slot.type === 'home' && targetRoute === currentRoute.current) {
+                    const now = Date.now();
+                    // Enforce minimum interval between re-clicks
+                    if (now - (lastHomeClickRef.current || 0) < 300) {
+                      setIsNavigating(false);
+                      return; // too soon
+                    }
+                    // Enforce max two re-clicks
+                    if ((homeClickCountRef.current || 0) >= 2) {
+                      setIsNavigating(false);
+                      return; // exceeded allowed re-clicks
+                    }
+                    // If Home has already been rendered, avoid re-navigating which would
+                    // replay entrance animations — just record the click and return.
+                    if (renderedRoutesRef.current.has('/home')) {
+                      homeClickCountRef.current = (homeClickCountRef.current || 0) + 1;
+                      lastHomeClickRef.current = now;
+                      try { if (homeClickResetTimer.current) clearTimeout(homeClickResetTimer.current); } catch (e) {}
+                      homeClickResetTimer.current = setTimeout(() => {
+                        homeClickCountRef.current = 0;
+                        lastHomeClickRef.current = 0;
+                        homeClickResetTimer.current = null;
+                      }, 1000);
+                      setIsNavigating(false);
+                      return;
+                    }
+
+                    // Otherwise, perform a replace (first-time render path) and mark rendered.
+                    try { router.replace('/home'); } catch (e) { /* ignore */ }
+                    renderedRoutesRef.current.add('/home');
+                    homeClickCountRef.current = (homeClickCountRef.current || 0) + 1;
+                    lastHomeClickRef.current = now;
+                    try { if (homeClickResetTimer.current) clearTimeout(homeClickResetTimer.current); } catch (e) {}
+                    homeClickResetTimer.current = setTimeout(() => {
+                      homeClickCountRef.current = 0;
+                      lastHomeClickRef.current = 0;
+                      homeClickResetTimer.current = null;
+                    }, 1000);
+                    setIsNavigating(false);
+                    return;
+                  }
+
+                  // If it's the More button when settings are open, do nothing.
+                  // Allow re-clicks on Home so screens can respond to a reselection (scroll to top, refresh, etc.).
+            if ((targetRoute === currentRoute.current && slot.type !== 'home') || 
               (slot.type === 'more' && (isSettingsOpen || isMoreOpen))) {
                     setIsNavigating(false);
                     return;

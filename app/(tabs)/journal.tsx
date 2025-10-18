@@ -67,6 +67,7 @@ export default function Journal() {
   // Load entries when the screen mounts or becomes active
   const { listJournalEntries, sendDeleteJournalEntry } = useSafeUserData();
   const { getCachedCategory } = useSafeUserData();
+  const listRef = useRef<FlatList<Entry> | null>(null);
 
   useEffect(() => {
     const loadEntries = async (background = false) => {
@@ -125,7 +126,17 @@ export default function Journal() {
       void loadEntries(false);
     };
     const refreshSub = DeviceEventEmitter.addListener('refreshEntries', refreshHandler);
-    return () => refreshSub.remove();
+    const homeReSub = DeviceEventEmitter.addListener('tabbar:homeReclicked', async () => {
+      try {
+        // Scroll to top
+        if (listRef.current) {
+          try { listRef.current.scrollToOffset({ offset: 0, animated: true }); } catch (e) { /* ignore */ }
+        }
+        // perform a background refresh that does not replay entrance animations
+        try { const list = await listJournalEntries(); setEntries(list); } catch (e) { /* ignore */ }
+      } catch (e) { /* ignore */ }
+    });
+    return () => { try { refreshSub.remove(); homeReSub.remove(); } catch (e) { /* ignore */ } };
   }, []);
   const pageBgLight = '#ffffffff';
   const pageBgFinal = isDarkMode ? '#0A1E1C' : pageBgLight;

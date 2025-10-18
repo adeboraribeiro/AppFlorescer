@@ -267,17 +267,22 @@ export default function EditEntryView() {
   };
 
   const clearEncryption = () => {
-    // confirm destructive action
-    Alert.alert(
+    // confirm destructive action with a typed confirmation to avoid accidental deletes
+    Alert.prompt?.(
       t('journal.clear_encryption_confirm_title', 'Delete encrypted data?'),
-      t('journal.clear_encryption_confirm', 'This will delete your local journal file and clear the stored passkey. This cannot be undone.'),
+      t('journal.clear_encryption_confirm_typed', "This will delete your local journal file and clear the stored passkey. To confirm, type DELETE."),
       [
         { text: t('cancel', 'Cancel'), style: 'cancel' },
-        { text: t('delete', 'Delete'), style: 'destructive', onPress: async () => {
+        { text: t('delete', 'Delete'), style: 'destructive', onPress: async (input?: string) => {
           try {
+            if (!input || String(input).toUpperCase().trim() !== 'DELETE') {
+              Alert.alert(t('journal.clear_encryption_confirm_failed_title', 'Confirmation failed'), t('journal.clear_encryption_confirm_failed', 'Typed confirmation did not match.'));
+              return;
+            }
             // remove file then clear passkey
+            console.log('[editor] clearEncryption: deleting flo file');
             await deleteUserFlo();
-            try { await clearPasskey(); } catch (e) { /* ignore */ }
+            try { await clearPasskey(); } catch (e) { console.warn('[editor] clearEncryption: clearPasskey failed', e); }
             // reset modal state
             setEncRaw(null);
             setEncIsEncrypted(false);
@@ -287,16 +292,16 @@ export default function EditEntryView() {
             setEncInfo(null);
             setEncStatusMsg(t('journal.cleared', 'Cleared encrypted file and passkey'));
             try { DeviceEventEmitter.emit('refreshEntries'); } catch (e) { /* ignore */ }
-            try { DeviceEventEmitter.emit('floDeleted'); } catch (e) { /* ignore */ }
-            // close modal and return to previous screen to avoid autosave recreating file
+            // DO NOT emit floDeleted globally; let components detect file state via refreshEntries or provider APIs
+            // close modal but do NOT force navigation; let user navigate to avoid accidental autosave recreation
             setShowEncModal(false);
-            try { router.push('/journal'); } catch (e) { /* ignore */ }
           } catch (e) {
             const msg = (e && (e as any).message) ? (e as any).message : String(e);
             Alert.alert(t('journal.clear_failed', 'Failed to clear'), msg);
           }
         } }
-      ]
+      ],
+      'plain-text'
     );
   };
 
@@ -364,7 +369,7 @@ export default function EditEntryView() {
 
       if (navigateBack) {
         stopOverlay();
-  router.push('/journal');
+  router.replace('/journal');
       }
     } catch (e) {
       console.warn('Failed to send entry:', e);
@@ -488,7 +493,7 @@ export default function EditEntryView() {
       )}
       {/* Header */}
       <View style={styles.header}>
-  <TouchableOpacity onPress={() => router.push('/journal')} style={styles.iconTouch}>
+  <TouchableOpacity onPress={() => router.replace('/journal')} style={styles.iconTouch}>
           <Ionicons name="chevron-back" size={24} color="#4dccc1" />
         </TouchableOpacity>
         <View style={styles.headerCenter}>

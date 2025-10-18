@@ -242,6 +242,8 @@ export default function HomeScreen() {
   const slideAnim = React.useRef(new Animated.Value(windowWidth)).current;
   // shadow fade value tied to entrance animation so shadows appear in sync
   const shadowFade = React.useRef(new Animated.Value(0)).current;
+  // Prevent replaying the entrance animation while the component remains mounted
+  const hasRunEntranceRef = React.useRef(false);
 
   // Fetch user profile when component mounts or settings modal closes
   React.useEffect(() => {
@@ -264,8 +266,17 @@ export default function HomeScreen() {
     }
   }, [userProfile]);
 
-  // Run entrance animations when component mounts
+  // Run entrance animations when component mounts. Guard so animations don't replay
+  // if the Home screen is already mounted and receives a navigation action.
   React.useEffect(() => {
+    if (hasRunEntranceRef.current) {
+      // we're already mounted and have run the entrance animation; ensure
+      // any navigation-aware state is cleared and skip replay.
+      setIsNavigating(false);
+      return;
+    }
+
+    hasRunEntranceRef.current = true;
     // Slide the page in from the right quickly.
     setIsNavigating(true);
     // animate slide and shadow in parallel; shadowFade uses JS driver so it can animate shadowOpacity
